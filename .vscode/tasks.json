@@ -1,0 +1,22 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Скомпилировать test_speed.cpp (тест скорости)",
+      "type": "shell",
+      "command": "g++",
+      "args": [
+        "-g",
+        "src/test_speed.cpp",
+        "-lsodium",
+        "-o",
+        "build/test_speed"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": ["$gcc"]
+    }
+  ]
+}
