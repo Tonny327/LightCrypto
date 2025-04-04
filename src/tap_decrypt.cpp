@@ -45,7 +45,15 @@ int open_tap(const std::string &dev_name)
 
 int main(int argc, char *argv[])
 {
-    std::cout << "🔧 [debug] tap_decrypt пересобран и работает!\n";
+
+    bool message_mode = false;
+    if (argc >= 2 && std::string(argv[1]) == "--msg")
+    {
+        message_mode = true;
+        argv++;
+        argc--;
+    }
+
 
     if (sodium_init() < 0)
     {
@@ -157,72 +165,81 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        // Записываем расшифрованный кадр в tap1
-        write(tap_fd, decrypted.data(), decrypted_len);
-        std::cout << "✅ Принят и расшифрован кадр (" << decrypted_len << " байт)\n";
-
-        // Сохраняем в файл для проверки
-        std::ofstream out("decrypted_frame.bin", std::ios::binary);
-        out.write((char *)decrypted.data(), decrypted_len);
-        out.close();
-
-        // ⏳ Даем tap_encrypt немного времени записать last_frame.bin
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-
-        // Сравнение с оригиналом
-        std::ifstream original("last_frame.bin", std::ios::binary);
-        std::vector<unsigned char> original_frame(
-            (std::istreambuf_iterator<char>(original)),
-            std::istreambuf_iterator<char>());
-        original.close();
-
-        unsigned char hash1[crypto_hash_sha256_BYTES];
-        crypto_hash_sha256(hash1, decrypted.data(), decrypted_len);
-
-        // Чтение первой строки из файла с ожидаемым хешем
-        std::ifstream hashlog("sent_hashes.log");
-        std::string hash_line;
-        if (std::getline(hashlog, hash_line))
+        if (message_mode)
         {
-            unsigned char expected[crypto_hash_sha256_BYTES];
-            std::stringstream ss(hash_line);
-
-            for (int i = 0; i < crypto_hash_sha256_BYTES; ++i)
-            {
-                std::string byte_hex;
-                ss >> byte_hex;
-                expected[i] = static_cast<unsigned char>(std::stoul(byte_hex, nullptr, 16));
-            }
-
-            if (std::memcmp(hash1, expected, crypto_hash_sha256_BYTES) == 0)
-            {
-                std::cout << "✅ Хеши совпадают — кадр корректен\n";
-            }
-            else
-            {
-                std::cerr << "❌ Ошибка: хеши не совпадают — кадр повреждён\n";
-            }
-            // Удаляем первую строку из sent_hashes.log
-            std::ifstream fin("sent_hashes.log");
-            std::ofstream fout("sent_hashes.tmp");
-
-            std::string skip_line;
-            std::getline(fin, skip_line); // Пропускаем первую строку
-
-            std::string line;
-            while (std::getline(fin, line))
-            {
-                fout << line << "\n";
-            }
-
-            fin.close();
-            fout.close();
-            std::remove("sent_hashes.log");
-            std::rename("sent_hashes.tmp", "sent_hashes.log");
+            std::string received_msg(reinterpret_cast<char *>(decrypted.data()), decrypted_len);
+            std::cout << "📩 Получено сообщение: " << received_msg << "\n";
         }
         else
         {
-            std::cerr << "⚠️ Не удалось прочитать хеш из sent_hashes.log — сравнение пропущено\n";
+
+            // Записываем расшифрованный кадр в tap1
+            write(tap_fd, decrypted.data(), decrypted_len);
+            std::cout << "✅ Принят и расшифрован кадр (" << decrypted_len << " байт)\n";
+
+            // Сохраняем в файл для проверки
+            std::ofstream out("decrypted_frame.bin", std::ios::binary);
+            out.write((char *)decrypted.data(), decrypted_len);
+            out.close();
+
+            // ⏳ Даем tap_encrypt немного времени записать last_frame.bin
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+            // Сравнение с оригиналом
+            std::ifstream original("last_frame.bin", std::ios::binary);
+            std::vector<unsigned char> original_frame(
+                (std::istreambuf_iterator<char>(original)),
+                std::istreambuf_iterator<char>());
+            original.close();
+
+            unsigned char hash1[crypto_hash_sha256_BYTES];
+            crypto_hash_sha256(hash1, decrypted.data(), decrypted_len);
+
+            // Чтение первой строки из файла с ожидаемым хешем
+            std::ifstream hashlog("sent_hashes.log");
+            std::string hash_line;
+            if (std::getline(hashlog, hash_line))
+            {
+                unsigned char expected[crypto_hash_sha256_BYTES];
+                std::stringstream ss(hash_line);
+
+                for (int i = 0; i < crypto_hash_sha256_BYTES; ++i)
+                {
+                    std::string byte_hex;
+                    ss >> byte_hex;
+                    expected[i] = static_cast<unsigned char>(std::stoul(byte_hex, nullptr, 16));
+                }
+
+                if (std::memcmp(hash1, expected, crypto_hash_sha256_BYTES) == 0)
+                {
+                    std::cout << "✅ Хеши совпадают — кадр корректен\n";
+                }
+                else
+                {
+                    std::cerr << "❌ Ошибка: хеши не совпадают — кадр повреждён\n";
+                }
+                // Удаляем первую строку из sent_hashes.log
+                std::ifstream fin("sent_hashes.log");
+                std::ofstream fout("sent_hashes.tmp");
+
+                std::string skip_line;
+                std::getline(fin, skip_line); // Пропускаем первую строку
+
+                std::string line;
+                while (std::getline(fin, line))
+                {
+                    fout << line << "\n";
+                }
+
+                fin.close();
+                fout.close();
+                std::remove("sent_hashes.log");
+                std::rename("sent_hashes.tmp", "sent_hashes.log");
+            }
+            else
+            {
+                std::cerr << "⚠️ Не удалось прочитать хеш из sent_hashes.log — сравнение пропущено\n";
+            }
         }
     }
 

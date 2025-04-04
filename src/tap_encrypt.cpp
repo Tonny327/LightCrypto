@@ -42,6 +42,15 @@ int open_tap(const std::string &dev_name)
 
 int main(int argc, char *argv[])
 {
+
+    bool message_mode = false;
+    if (argc >= 2 && std::string(argv[1]) == "--msg")
+    {
+        message_mode = true;
+        argv++;
+        argc--;
+    }
+
     if (sodium_init() < 0)
     {
         std::cerr << "Не удалось инициализировать libsodium\n";
@@ -129,45 +138,77 @@ int main(int argc, char *argv[])
 
     std::vector<unsigned char> nonce(NONCE_SIZE);
 
-    while (true)
+    if (message_mode)
     {
-        unsigned char buffer[MAX_PACKET_SIZE];
-        ssize_t nread = read(tap_fd, buffer, sizeof(buffer));
-        if (nread <= 0)
-            continue;
+        std::cout << "💬 Режим отправки сообщений. Вводите текст:\n";
+        std::string user_message;
+        while (std::getline(std::cin, user_message))
+        {
+            if (user_message.empty())
+                continue;
 
-        randombytes_buf(nonce.data(), nonce.size());
+            randombytes_buf(nonce.data(), nonce.size());
 
-        std::vector<unsigned char> encrypted(nread + crypto_aead_chacha20poly1305_IETF_ABYTES);
-        unsigned long long encrypted_len = 0;
+            std::vector<unsigned char> encrypted(user_message.size() + crypto_aead_chacha20poly1305_IETF_ABYTES);
+            unsigned long long encrypted_len = 0;
 
-        crypto_aead_chacha20poly1305_ietf_encrypt(
-            encrypted.data(), &encrypted_len,
-            buffer, nread,
-            nullptr, 0, nullptr,
-            nonce.data(), key.data());
+            crypto_aead_chacha20poly1305_ietf_encrypt(
+                encrypted.data(), &encrypted_len,
+                reinterpret_cast<const unsigned char *>(user_message.data()), user_message.size(),
+                nullptr, 0, nullptr,
+                nonce.data(), key.data());
 
-        // Сохраняем исходный кадр для теста
-        std::ofstream log("last_frame.bin", std::ios::binary);
-        log.write((char *)buffer, nread);
-        log.close();
+            std::vector<unsigned char> packet;
+            packet.insert(packet.end(), nonce.begin(), nonce.end());
+            packet.insert(packet.end(), encrypted.begin(), encrypted.begin() + encrypted_len);
 
-        // nonce + encrypted
-        std::vector<unsigned char> packet;
-        packet.insert(packet.end(), nonce.begin(), nonce.end());
-        packet.insert(packet.end(), encrypted.begin(), encrypted.begin() + encrypted_len);
+            sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+            std::cout << "📤 Сообщение отправлено (" << user_message.size() << " байт)\n";
+        }
+    }
+    else
+    {
 
-        unsigned char hash_src[crypto_hash_sha256_BYTES];
-        crypto_hash_sha256(hash_src, buffer, nread);
+        while (true)
+        {
+            unsigned char buffer[MAX_PACKET_SIZE];
+            ssize_t nread = read(tap_fd, buffer, sizeof(buffer));
+            if (nread <= 0)
+                continue;
 
-        std::ofstream hashlog("sent_hashes.log", std::ios::app);
-        for (int i = 0; i < crypto_hash_sha256_BYTES; ++i)
-            hashlog << std::hex << std::setw(2) << std::setfill('0') << (int)hash_src[i] << " ";
-        hashlog << std::endl;
-        hashlog.close();        
+            randombytes_buf(nonce.data(), nonce.size());
 
-        sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
-        std::cout << "📤 Отправлен зашифрованный кадр (" << nread << " байт)\n";
+            std::vector<unsigned char> encrypted(nread + crypto_aead_chacha20poly1305_IETF_ABYTES);
+            unsigned long long encrypted_len = 0;
+
+            crypto_aead_chacha20poly1305_ietf_encrypt(
+                encrypted.data(), &encrypted_len,
+                buffer, nread,
+                nullptr, 0, nullptr,
+                nonce.data(), key.data());
+
+            // Сохраняем исходный кадр для теста
+            std::ofstream log("last_frame.bin", std::ios::binary);
+            log.write((char *)buffer, nread);
+            log.close();
+
+            // nonce + encrypted
+            std::vector<unsigned char> packet;
+            packet.insert(packet.end(), nonce.begin(), nonce.end());
+            packet.insert(packet.end(), encrypted.begin(), encrypted.begin() + encrypted_len);
+
+            unsigned char hash_src[crypto_hash_sha256_BYTES];
+            crypto_hash_sha256(hash_src, buffer, nread);
+
+            std::ofstream hashlog("sent_hashes.log", std::ios::app);
+            for (int i = 0; i < crypto_hash_sha256_BYTES; ++i)
+                hashlog << std::hex << std::setw(2) << std::setfill('0') << (int)hash_src[i] << " ";
+            hashlog << std::endl;
+            hashlog.close();
+
+            sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+            std::cout << "📤 Отправлен зашифрованный кадр (" << nread << " байт)\n";
+        }
     }
 
     close(tap_fd);
