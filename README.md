@@ -28,6 +28,9 @@ mkdir -p build
 g++ -g src/tap_encrypt.cpp -lsodium -o build/tap_encrypt
 g++ -g src/tap_decrypt.cpp -lsodium -o build/tap_decrypt
 
+запусти скрипт
+bash rebuild.sh
+
 
 ---
 # 4. Запусти (в двух терминалах)
