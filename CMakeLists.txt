@@ -17,3 +17,4 @@ target_link_libraries(tap_encrypt ${SODIUM_LIBRARIES})
 
 add_executable(tap_decrypt src/tap_decrypt.cpp)
 target_link_libraries(tap_decrypt ${SODIUM_LIBRARIES})
+

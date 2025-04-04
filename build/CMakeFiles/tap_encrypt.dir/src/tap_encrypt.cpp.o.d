@@ -284,4 +284,12 @@ CMakeFiles/tap_encrypt.dir/src/tap_encrypt.cpp.o: \
  /usr/include/sodium/crypto_pwhash_scryptsalsa208sha256.h \
  /usr/include/sodium/crypto_stream_salsa2012.h \
  /usr/include/sodium/crypto_stream_salsa208.h \
- /usr/include/sodium/crypto_stream_xchacha20.h
+ /usr/include/sodium/crypto_stream_xchacha20.h /usr/include/arpa/inet.h \
+ /usr/include/c++/13/iomanip /usr/include/c++/13/locale \
+ /usr/include/c++/13/bits/locale_facets_nonio.h /usr/include/c++/13/ctime \
+ /usr/include/x86_64-linux-gnu/c++/13/bits/time_members.h \
+ /usr/include/x86_64-linux-gnu/c++/13/bits/messages_members.h \
+ /usr/include/libintl.h /usr/include/c++/13/bits/locale_facets_nonio.tcc \
+ /usr/include/c++/13/bits/locale_conv.h \
+ /usr/include/c++/13/bits/quoted_string.h /usr/include/c++/13/sstream \
+ /usr/include/c++/13/bits/sstream.tcc

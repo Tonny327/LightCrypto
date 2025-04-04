@@ -10,7 +10,8 @@
 #include <net/if.h>
 #include <sys/socket.h>
 #include <sodium.h>
-
+#include <arpa/inet.h> // для inet_pton
+#include <iomanip>     // для std::setw, std::setfill
 
 constexpr size_t MAX_PACKET_SIZE = 2000;
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
@@ -39,12 +40,42 @@ int open_tap(const std::string &dev_name)
     return fd;
 }
 
-int main()
+int main(int argc, char *argv[])
 {
     if (sodium_init() < 0)
     {
         std::cerr << "Не удалось инициализировать libsodium\n";
         return 1;
+    }
+    const char *ip_str = "127.0.0.1";
+    int port = 12345;
+
+    if (argc >= 2)
+        ip_str = argv[1];
+    if (argc >= 3)
+        port = std::stoi(argv[2]);
+
+    std::cout << "🌐 Используем IP: " << ip_str << ", порт: " << port << "\n";
+
+    std::string ping_cmd = "ping -c 1 " + std::string(ip_str) + " > /dev/null 2>&1";
+    int ping_result = system(ping_cmd.c_str());
+
+    if (ping_result != 0)
+    {
+        std::cout << "⚠️  Внимание: IP-адрес " << ip_str << " недоступен (ping не прошёл)\n";
+        std::cout << "Продолжить отправку данных? [y/N]: ";
+
+        std::string answer;
+        std::getline(std::cin, answer);
+        if (answer != "y" && answer != "Y")
+        {
+            std::cout << "🚫 Отправка отменена пользователем.\n";
+            return 1;
+        }
+    }
+    else
+    {
+        std::cout << "✅ IP-адрес " << ip_str << " доступен, начинаем работу...\n";
     }
 
     int tap_fd = open_tap("tap0");
@@ -59,8 +90,12 @@ int main()
 
     sockaddr_in dest_addr{};
     dest_addr.sin_family = AF_INET;
-    dest_addr.sin_port = htons(12345);
-    dest_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK); // 127.0.0.1
+    dest_addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, ip_str, &dest_addr.sin_addr) <= 0)
+    {
+        std::cerr << "❌ Неверный IP-адрес\n";
+        return 1;
+    }
 
     // === [Автоматический обмен ключами через UDP] ===
     unsigned char my_public_key[crypto_kx_PUBLICKEYBYTES];
@@ -106,11 +141,6 @@ int main()
         std::vector<unsigned char> encrypted(nread + crypto_aead_chacha20poly1305_IETF_ABYTES);
         unsigned long long encrypted_len = 0;
 
-        // std::cout << "📄 Оригинальные данные (до шифрования):\n";
-        // for (size_t i = 0; i < std::min((size_t)32, (size_t)nread); ++i)
-        //     std::printf("%02x ", buffer[i]);
-        // std::cout << "\n";
-
         crypto_aead_chacha20poly1305_ietf_encrypt(
             encrypted.data(), &encrypted_len,
             buffer, nread,
@@ -127,14 +157,17 @@ int main()
         packet.insert(packet.end(), nonce.begin(), nonce.end());
         packet.insert(packet.end(), encrypted.begin(), encrypted.begin() + encrypted_len);
 
+        unsigned char hash_src[crypto_hash_sha256_BYTES];
+        crypto_hash_sha256(hash_src, buffer, nread);
+
+        std::ofstream hashlog("sent_hashes.log", std::ios::app);
+        for (int i = 0; i < crypto_hash_sha256_BYTES; ++i)
+            hashlog << std::hex << std::setw(2) << std::setfill('0') << (int)hash_src[i] << " ";
+        hashlog << std::endl;
+        hashlog.close();        
+
         sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
         std::cout << "📤 Отправлен зашифрованный кадр (" << nread << " байт)\n";
-
-        // std::cout << "🔐 Зашифрованные данные:\n";
-        // for (size_t i = 0; i < std::min((size_t)32, (size_t)encrypted_len); ++i)
-        //     std::printf("%02x ", encrypted[i]);
-        // std::cout << "\n";
-        
     }
 
     close(tap_fd);
