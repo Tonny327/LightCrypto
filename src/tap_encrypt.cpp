@@ -16,6 +16,7 @@
 constexpr size_t MAX_PACKET_SIZE = 2000;
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
 constexpr size_t NONCE_SIZE = crypto_aead_chacha20poly1305_IETF_NPUBBYTES;
+constexpr size_t HASH_SIZE = crypto_hash_sha256_BYTES;
 
 int open_tap(const std::string &dev_name)
 {
@@ -87,9 +88,11 @@ int main(int argc, char *argv[])
         std::cout << "✅ IP-адрес " << ip_str << " доступен, начинаем работу...\n";
     }
 
+    // Открываем tap0
     int tap_fd = open_tap("tap0");
     std::cout << "📡 tap0 открыт для чтения Ethernet-кадров\n";
 
+    // Создаём UDP-сокет
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0)
     {
@@ -97,6 +100,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // Формируем адрес назначения
     sockaddr_in dest_addr{};
     dest_addr.sin_family = AF_INET;
     dest_addr.sin_port = htons(port);
@@ -136,10 +140,12 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // Вектор для nonce (уникальный для каждого кадра)
     std::vector<unsigned char> nonce(NONCE_SIZE);
 
     if (message_mode)
     {
+        // Режим текстовых сообщений
         std::cout << "💬 Режим отправки сообщений. Вводите текст:\n";
         std::string user_message;
         while (std::getline(std::cin, user_message))
@@ -147,21 +153,39 @@ int main(int argc, char *argv[])
             if (user_message.empty())
                 continue;
 
+            // Считаем SHA-256 от текста
+            unsigned char hash_buf[HASH_SIZE];
+            crypto_hash_sha256(hash_buf,
+                               reinterpret_cast<const unsigned char *>(user_message.data()),
+                               user_message.size());
+
+            // Сформируем plaintext = [32 байта хеша] + [исходный текст]
+            std::vector<unsigned char> plaintext;
+            plaintext.insert(plaintext.end(), hash_buf, hash_buf + HASH_SIZE);
+            plaintext.insert(plaintext.end(),
+                             reinterpret_cast<const unsigned char *>(user_message.data()),
+                             reinterpret_cast<const unsigned char *>(user_message.data()) + user_message.size());
+
+            // Генерируем nonce
             randombytes_buf(nonce.data(), nonce.size());
 
-            std::vector<unsigned char> encrypted(user_message.size() + crypto_aead_chacha20poly1305_IETF_ABYTES);
+            // Реальный размер plaintext — это (32 + длина сообщения)
+            std::vector<unsigned char> encrypted(plaintext.size() + crypto_aead_chacha20poly1305_IETF_ABYTES);
             unsigned long long encrypted_len = 0;
 
+            // Шифруем (ChaCha20-Poly1305)
             crypto_aead_chacha20poly1305_ietf_encrypt(
                 encrypted.data(), &encrypted_len,
-                reinterpret_cast<const unsigned char *>(user_message.data()), user_message.size(),
+                plaintext.data(), plaintext.size(), // <-- здесь
                 nullptr, 0, nullptr,
                 nonce.data(), key.data());
 
+            // Готовим пакет = nonce + ciphertext
             std::vector<unsigned char> packet;
             packet.insert(packet.end(), nonce.begin(), nonce.end());
             packet.insert(packet.end(), encrypted.begin(), encrypted.begin() + encrypted_len);
 
+            // Отправляем
             sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
             std::cout << "📤 Сообщение отправлено (" << user_message.size() << " байт)\n";
         }
@@ -169,42 +193,41 @@ int main(int argc, char *argv[])
     else
     {
 
+        // Режим отправки Ethernet-кадров из tap
         while (true)
         {
+            // Читаем кадр из tap0
             unsigned char buffer[MAX_PACKET_SIZE];
             ssize_t nread = read(tap_fd, buffer, sizeof(buffer));
             if (nread <= 0)
                 continue;
 
+            // Считаем SHA-256 от кадра
+            unsigned char hash_buf[HASH_SIZE];
+            crypto_hash_sha256(hash_buf, buffer, nread);
+
+            // Формируем plaintext = [32 байта хеша] + [сам кадр]
+            std::vector<unsigned char> plaintext;
+            plaintext.insert(plaintext.end(), hash_buf, hash_buf + HASH_SIZE);
+            plaintext.insert(plaintext.end(), buffer, buffer + nread);
+
+            // Генерируем nonce
             randombytes_buf(nonce.data(), nonce.size());
 
-            std::vector<unsigned char> encrypted(nread + crypto_aead_chacha20poly1305_IETF_ABYTES);
-            unsigned long long encrypted_len = 0;
+        // Нужно шифровать plaintext
+        std::vector<unsigned char> encrypted(plaintext.size() + crypto_aead_chacha20poly1305_IETF_ABYTES);
+        unsigned long long encrypted_len = 0;
 
-            crypto_aead_chacha20poly1305_ietf_encrypt(
-                encrypted.data(), &encrypted_len,
-                buffer, nread,
-                nullptr, 0, nullptr,
-                nonce.data(), key.data());
-
-            // Сохраняем исходный кадр для теста
-            std::ofstream log("last_frame.bin", std::ios::binary);
-            log.write((char *)buffer, nread);
-            log.close();
+        crypto_aead_chacha20poly1305_ietf_encrypt(
+            encrypted.data(), &encrypted_len,
+            plaintext.data(), plaintext.size(), // <-- передаём всё
+            nullptr, 0, nullptr,
+            nonce.data(), key.data());
 
             // nonce + encrypted
             std::vector<unsigned char> packet;
             packet.insert(packet.end(), nonce.begin(), nonce.end());
             packet.insert(packet.end(), encrypted.begin(), encrypted.begin() + encrypted_len);
-
-            unsigned char hash_src[crypto_hash_sha256_BYTES];
-            crypto_hash_sha256(hash_src, buffer, nread);
-
-            std::ofstream hashlog("sent_hashes.log", std::ios::app);
-            for (int i = 0; i < crypto_hash_sha256_BYTES; ++i)
-                hashlog << std::hex << std::setw(2) << std::setfill('0') << (int)hash_src[i] << " ";
-            hashlog << std::endl;
-            hashlog.close();
 
             sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
             std::cout << "📤 Отправлен зашифрованный кадр (" << nread << " байт)\n";

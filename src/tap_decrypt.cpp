@@ -19,6 +19,7 @@
 constexpr size_t MAX_PACKET_SIZE = 2000;
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
 constexpr size_t NONCE_SIZE = crypto_aead_chacha20poly1305_IETF_NPUBBYTES;
+constexpr size_t HASH_SIZE = crypto_hash_sha256_BYTES;
 
 int open_tap(const std::string &dev_name)
 {
@@ -46,6 +47,7 @@ int open_tap(const std::string &dev_name)
 int main(int argc, char *argv[])
 {
 
+    // --msg: если true, тогда мы интерпретируем расшифрованные данные как строку
     bool message_mode = false;
     if (argc >= 2 && std::string(argv[1]) == "--msg")
     {
@@ -54,12 +56,13 @@ int main(int argc, char *argv[])
         argc--;
     }
 
-
     if (sodium_init() < 0)
     {
         std::cerr << "Не удалось инициализировать libsodium\n";
         return 1;
     }
+
+    // Параметры: IP и порт, на котором слушаем
     const char *ip_str = "0.0.0.0"; // слушаем все интерфейсы по умолчанию
     int port = 12345;
 
@@ -78,6 +81,7 @@ int main(int argc, char *argv[])
     int tap_fd = open_tap("tap1");
     std::cout << "📡 tap1 открыт для записи расшифрованных Ethernet-кадров\n";
 
+    // Создаём UDP-сокет
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0)
     {
@@ -136,19 +140,23 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // Основной цикл приёма
     while (true)
     {
         unsigned char buffer[MAX_PACKET_SIZE];
         sockaddr_in sender_addr{};
         socklen_t sender_len = sizeof(sender_addr);
 
+        // Принимаем UDP-пакет
         ssize_t nrecv = recvfrom(sock, buffer, sizeof(buffer), 0, (sockaddr *)&sender_addr, &sender_len);
         if (nrecv <= NONCE_SIZE)
             continue;
 
+        // Разделяем nonce и ciphertext
         std::vector<unsigned char> nonce(buffer, buffer + NONCE_SIZE);
         std::vector<unsigned char> ciphertext(buffer + NONCE_SIZE, buffer + nrecv);
 
+        // Расшифровываем
         std::vector<unsigned char> decrypted(ciphertext.size());
         unsigned long long decrypted_len = 0;
 
@@ -165,81 +173,54 @@ int main(int argc, char *argv[])
             continue;
         }
 
+        // Проверяем, что длина хотя бы 32 байта (под хеш)
+        if (decrypted_len < HASH_SIZE)
+        {
+            std::cerr << "❌ Слишком маленький расшифрованный буфер!\n";
+            continue;
+        }
+
+        // Первые 32 байта — это хеш
+        unsigned char received_hash[HASH_SIZE];
+        std::memcpy(received_hash, decrypted.data(), HASH_SIZE);
+
+        // Остальная часть – это сообщение
+        size_t msg_len = decrypted_len - HASH_SIZE;
+
+        // Считаем свой хеш
+        unsigned char actual_hash[HASH_SIZE];
+        crypto_hash_sha256(actual_hash,
+                           decrypted.data() + HASH_SIZE, // данные начинаются через 32 байта
+                           msg_len);
+
+        // Сравниваем
+        if (std::memcmp(received_hash, actual_hash, HASH_SIZE) != 0)
+        {
+            std::cerr << "❌ Хеш не совпадает — данные повреждены!\n";
+            continue;
+        }
+
         if (message_mode)
         {
-            std::string received_msg(reinterpret_cast<char *>(decrypted.data()), decrypted_len);
-            std::cout << "📩 Получено сообщение: " << received_msg << "\n";
+            // Теперь выводим сообщение:
+            std::string received_msg(
+                reinterpret_cast<char *>(decrypted.data() + HASH_SIZE),
+                msg_len);
+            std::cout << "📩 Получено сообщение: "  
+            << msg_len << " байт): " 
+            << received_msg << "\n";
         }
         else
         {
+            size_t data_len = decrypted_len - HASH_SIZE;
+            std::vector<unsigned char> data_buf(data_len);
+            std::memcpy(data_buf.data(), decrypted.data() + HASH_SIZE, data_len);
 
-            // Записываем расшифрованный кадр в tap1
-            write(tap_fd, decrypted.data(), decrypted_len);
-            std::cout << "✅ Принят и расшифрован кадр (" << decrypted_len << " байт)\n";
+            // Пишем расшифрованный (и проверенный) кадр в tap1
+            write(tap_fd, data_buf.data(), data_len);
 
-            // Сохраняем в файл для проверки
-            std::ofstream out("decrypted_frame.bin", std::ios::binary);
-            out.write((char *)decrypted.data(), decrypted_len);
-            out.close();
-
-            // ⏳ Даем tap_encrypt немного времени записать last_frame.bin
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-
-            // Сравнение с оригиналом
-            std::ifstream original("last_frame.bin", std::ios::binary);
-            std::vector<unsigned char> original_frame(
-                (std::istreambuf_iterator<char>(original)),
-                std::istreambuf_iterator<char>());
-            original.close();
-
-            unsigned char hash1[crypto_hash_sha256_BYTES];
-            crypto_hash_sha256(hash1, decrypted.data(), decrypted_len);
-
-            // Чтение первой строки из файла с ожидаемым хешем
-            std::ifstream hashlog("sent_hashes.log");
-            std::string hash_line;
-            if (std::getline(hashlog, hash_line))
-            {
-                unsigned char expected[crypto_hash_sha256_BYTES];
-                std::stringstream ss(hash_line);
-
-                for (int i = 0; i < crypto_hash_sha256_BYTES; ++i)
-                {
-                    std::string byte_hex;
-                    ss >> byte_hex;
-                    expected[i] = static_cast<unsigned char>(std::stoul(byte_hex, nullptr, 16));
-                }
-
-                if (std::memcmp(hash1, expected, crypto_hash_sha256_BYTES) == 0)
-                {
-                    std::cout << "✅ Хеши совпадают — кадр корректен\n";
-                }
-                else
-                {
-                    std::cerr << "❌ Ошибка: хеши не совпадают — кадр повреждён\n";
-                }
-                // Удаляем первую строку из sent_hashes.log
-                std::ifstream fin("sent_hashes.log");
-                std::ofstream fout("sent_hashes.tmp");
-
-                std::string skip_line;
-                std::getline(fin, skip_line); // Пропускаем первую строку
-
-                std::string line;
-                while (std::getline(fin, line))
-                {
-                    fout << line << "\n";
-                }
-
-                fin.close();
-                fout.close();
-                std::remove("sent_hashes.log");
-                std::rename("sent_hashes.tmp", "sent_hashes.log");
-            }
-            else
-            {
-                std::cerr << "⚠️ Не удалось прочитать хеш из sent_hashes.log — сравнение пропущено\n";
-            }
+            std::cout << "✅ Принят и расшифрован кадр (" << data_len << " байт)\n";
+            std::cout << "✅ Хеши совпадают — кадр корректен\n";
         }
     }
 
