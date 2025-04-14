@@ -43,6 +43,42 @@ int open_tap(const std::string &dev_name)
 
     return fd;
 }
+void send_frames(int tap_fd, int sock, const sockaddr_in &dest_addr, const std::vector<unsigned char> &key)
+{
+    std::vector<unsigned char> nonce(NONCE_SIZE);
+    while (true)
+    {
+        unsigned char buffer[MAX_PACKET_SIZE];
+        ssize_t nread = read(tap_fd, buffer, sizeof(buffer));
+        if (nread <= 0)
+            continue;
+
+        unsigned char hash_buf[HASH_SIZE];
+        crypto_hash_sha256(hash_buf, buffer, nread);
+
+        std::vector<unsigned char> plaintext;
+        plaintext.insert(plaintext.end(), hash_buf, hash_buf + HASH_SIZE);
+        plaintext.insert(plaintext.end(), buffer, buffer + nread);
+
+        randombytes_buf(nonce.data(), nonce.size());
+
+        std::vector<unsigned char> encrypted(plaintext.size() + crypto_aead_chacha20poly1305_IETF_ABYTES);
+        unsigned long long encrypted_len = 0;
+
+        crypto_aead_chacha20poly1305_ietf_encrypt(
+            encrypted.data(), &encrypted_len,
+            plaintext.data(), plaintext.size(),
+            nullptr, 0, nullptr,
+            nonce.data(), key.data());
+
+        std::vector<unsigned char> packet;
+        packet.insert(packet.end(), nonce.begin(), nonce.end());
+        packet.insert(packet.end(), encrypted.begin(), encrypted.begin() + encrypted_len);
+
+        sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+        std::cout << "📤 Отправлен зашифрованный кадр из tap1 (" << nread << " байт)\n";
+    }
+}
 
 int main(int argc, char *argv[])
 {
@@ -140,6 +176,17 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // Создаём второй сокет для отправки
+    int send_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (send_sock < 0)
+    {
+        perror("send socket");
+        return 1;
+    }
+
+    // Запускаем отправку кадров в отдельном потоке
+    std::thread send_thread(send_frames, tap_fd, send_sock, sender_addr, std::ref(key));
+
     // Основной цикл приёма
     while (true)
     {
@@ -206,9 +253,9 @@ int main(int argc, char *argv[])
             std::string received_msg(
                 reinterpret_cast<char *>(decrypted.data() + HASH_SIZE),
                 msg_len);
-            std::cout << "📩 Получено сообщение: "  
-            << msg_len << " байт): " 
-            << received_msg << "\n";
+            std::cout << "📩 Получено сообщение: "
+                      << msg_len << " байт): "
+                      << received_msg << "\n";
         }
         else
         {

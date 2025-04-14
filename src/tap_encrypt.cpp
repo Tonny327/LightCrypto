@@ -12,6 +12,8 @@
 #include <sodium.h>
 #include <arpa/inet.h> // для inet_pton
 #include <iomanip>     // для std::setw, std::setfill
+#include <thread>
+
 
 constexpr size_t MAX_PACKET_SIZE = 2000;
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
@@ -39,6 +41,63 @@ int open_tap(const std::string &dev_name)
     }
 
     return fd;
+}
+
+void receive_frames(int tap_fd, int sock, const std::vector<unsigned char> &key)
+{
+    while (true)
+    {
+        unsigned char buffer[MAX_PACKET_SIZE];
+        ssize_t nrecv = recv(sock, buffer, sizeof(buffer), 0);
+        if (nrecv <= NONCE_SIZE)
+            continue;
+
+        std::vector<unsigned char> nonce(buffer, buffer + NONCE_SIZE);
+        std::vector<unsigned char> ciphertext(buffer + NONCE_SIZE, buffer + nrecv);
+
+        std::vector<unsigned char> decrypted(ciphertext.size());
+        unsigned long long decrypted_len = 0;
+
+        int result = crypto_aead_chacha20poly1305_ietf_decrypt(
+            decrypted.data(), &decrypted_len,
+            nullptr,
+            ciphertext.data(), ciphertext.size(),
+            nullptr, 0,
+            nonce.data(), key.data());
+
+        if (result != 0)
+        {
+            std::cerr << "❌ Ошибка расшифровки в receive_frames!\n";
+            continue;
+        }
+
+        if (decrypted_len < HASH_SIZE)
+        {
+            std::cerr << "❌ Слишком маленький расшифрованный буфер!\n";
+            continue;
+        }
+
+        unsigned char received_hash[HASH_SIZE];
+        std::memcpy(received_hash, decrypted.data(), HASH_SIZE);
+
+        size_t msg_len = decrypted_len - HASH_SIZE;
+
+        unsigned char actual_hash[HASH_SIZE];
+        crypto_hash_sha256(actual_hash, decrypted.data() + HASH_SIZE, msg_len);
+
+        if (std::memcmp(received_hash, actual_hash, HASH_SIZE) != 0)
+        {
+            std::cerr << "❌ Хеш не совпадает в receive_frames — данные повреждены!\n";
+            continue;
+        }
+
+        size_t data_len = decrypted_len - HASH_SIZE;
+        std::vector<unsigned char> data_buf(data_len);
+        std::memcpy(data_buf.data(), decrypted.data() + HASH_SIZE, data_len);
+
+        write(tap_fd, data_buf.data(), data_len);
+        std::cout << "✅ Принят и расшифрован кадр из tap1 (" << data_len << " байт)\n";
+    }
 }
 
 int main(int argc, char *argv[])
@@ -72,21 +131,30 @@ int main(int argc, char *argv[])
 
     if (ping_result != 0)
     {
-        std::cout << "⚠️  Внимание: IP-адрес " << ip_str << " недоступен (ping не прошёл)\n";
-        std::cout << "Продолжить отправку данных? [y/N]: ";
-
-        std::string answer;
-        std::getline(std::cin, answer);
-        if (answer != "y" && answer != "Y")
-        {
-            std::cout << "🚫 Отправка отменена пользователем.\n";
-            return 1;
-        }
+        std::cout << "⚠️  Внимание: IP-адрес " << ip_str
+                  << " недоступен (ping не прошёл), но продолжаем...\n";
     }
     else
     {
         std::cout << "✅ IP-адрес " << ip_str << " доступен, начинаем работу...\n";
     }
+    // if (ping_result != 0)
+    // {
+    //     std::cout << "⚠️  Внимание: IP-адрес " << ip_str << " недоступен (ping не прошёл)\n";
+    //     std::cout << "Продолжить отправку данных? [y/N]: ";
+
+    //     std::string answer;
+    //     std::getline(std::cin, answer);
+    //     if (answer != "y" && answer != "Y")
+    //     {
+    //         std::cout << "🚫 Отправка отменена пользователем.\n";
+    //         return 1;
+    //     }
+    // }
+    // else
+    // {
+    //     std::cout << "✅ IP-адрес " << ip_str << " доступен, начинаем работу...\n";
+    // }
 
     // Открываем tap0
     int tap_fd = open_tap("tap0");
@@ -139,6 +207,9 @@ int main(int argc, char *argv[])
         std::cerr << "❌ Ошибка при расчёте общего ключа (client)\n";
         return 1;
     }
+
+    // Запускаем приём кадров в отдельном потоке
+    std::thread receive_thread(receive_frames, tap_fd, sock, std::ref(key));
 
     // Вектор для nonce (уникальный для каждого кадра)
     std::vector<unsigned char> nonce(NONCE_SIZE);
@@ -214,15 +285,15 @@ int main(int argc, char *argv[])
             // Генерируем nonce
             randombytes_buf(nonce.data(), nonce.size());
 
-        // Нужно шифровать plaintext
-        std::vector<unsigned char> encrypted(plaintext.size() + crypto_aead_chacha20poly1305_IETF_ABYTES);
-        unsigned long long encrypted_len = 0;
+            // Нужно шифровать plaintext
+            std::vector<unsigned char> encrypted(plaintext.size() + crypto_aead_chacha20poly1305_IETF_ABYTES);
+            unsigned long long encrypted_len = 0;
 
-        crypto_aead_chacha20poly1305_ietf_encrypt(
-            encrypted.data(), &encrypted_len,
-            plaintext.data(), plaintext.size(), // <-- передаём всё
-            nullptr, 0, nullptr,
-            nonce.data(), key.data());
+            crypto_aead_chacha20poly1305_ietf_encrypt(
+                encrypted.data(), &encrypted_len,
+                plaintext.data(), plaintext.size(), // <-- передаём всё
+                nullptr, 0, nullptr,
+                nonce.data(), key.data());
 
             // nonce + encrypted
             std::vector<unsigned char> packet;
