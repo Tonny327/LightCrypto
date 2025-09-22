@@ -1,1 +1,0 @@
-/usr/bin/c++ CMakeFiles/lightcrypto.dir/src/test_speed.cpp.o -o lightcrypto  -lsodium 

@@ -1,5 +1,0 @@
-/home/tonny/LightCrypto/build/CMakeFiles/lightcrypto.dir
-/home/tonny/LightCrypto/build/CMakeFiles/tap_encrypt.dir
-/home/tonny/LightCrypto/build/CMakeFiles/tap_decrypt.dir
-/home/tonny/LightCrypto/build/CMakeFiles/edit_cache.dir
-/home/tonny/LightCrypto/build/CMakeFiles/rebuild_cache.dir
