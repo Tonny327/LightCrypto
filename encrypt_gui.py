@@ -74,9 +74,13 @@ class EmbeddedTerminal(tk.Frame):
         self.command_entry.pack(side="left", fill="x", expand=True, padx=(5, 0))
         self.command_entry.bind("<Return>", self.execute_command)
         
+        # Устанавливаем подсказку
+        self.update_command_prompt()
+        
         # Приветственное сообщение
         self.print_to_terminal("🖥️ LightCrypto встроенный терминал")
         self.print_to_terminal("💡 Введите команду или используйте кнопку 'Запустить задачу'")
+        self.print_to_terminal("💬 В режиме сообщений вводите текст в поле снизу для отправки")
         self.print_to_terminal("")
         
     def print_to_terminal(self, text, color="black"):
@@ -94,18 +98,70 @@ class EmbeddedTerminal(tk.Frame):
         self.terminal_text.config(state=tk.DISABLED)
         self.print_to_terminal("🧹 Терминал очищен")
         
+    def update_command_prompt(self):
+        """Обновление подсказки в поле ввода"""
+        if (self.is_running and hasattr(self.parent_gui, 'message_mode') and 
+            self.parent_gui.message_mode.get()):
+            # В режиме сообщений
+            placeholder = "Введите сообщение для отправки..."
+        else:
+            # В обычном режиме
+            placeholder = "Введите команду..."
+            
+        # Обновляем placeholder (если поле пустое)
+        if not self.command_entry.get():
+            self.command_entry.config(fg="gray")
+            self.command_entry.insert(0, placeholder)
+            
+            def on_focus_in(event):
+                if self.command_entry.get() == placeholder:
+                    self.command_entry.delete(0, tk.END)
+                    self.command_entry.config(fg="black")
+                    
+            def on_focus_out(event):
+                if not self.command_entry.get():
+                    self.command_entry.config(fg="gray")
+                    self.command_entry.insert(0, placeholder)
+                    
+            self.command_entry.bind("<FocusIn>", on_focus_in)
+            self.command_entry.bind("<FocusOut>", on_focus_out)
+        
     def execute_command(self, event=None):
-        """Выполнение команды из поля ввода"""
-        command = self.command_entry.get().strip()
-        if not command:
+        """Выполнение команды или отправка сообщения"""
+        text = self.command_entry.get().strip()
+        
+        # Игнорируем если это placeholder текст
+        if not text or text.startswith("Введите"):
             return
             
         self.command_entry.delete(0, tk.END)
-        self.print_to_terminal(f"$ {command}")
+        self.command_entry.config(fg="black")  # Сбрасываем цвет
         
-        # Выполняем команду в отдельном потоке
-        thread = threading.Thread(target=self.run_command, args=(command,), daemon=True)
-        thread.start()
+        # Если tap_encrypt запущен в режиме сообщений, отправляем текст в процесс
+        if (self.is_running and self.process and 
+            hasattr(self.parent_gui, 'message_mode') and 
+            self.parent_gui.message_mode.get()):
+            
+            self.send_message_to_process(text)
+        else:
+            # Обычное выполнение команды
+            self.print_to_terminal(f"$ {text}")
+            thread = threading.Thread(target=self.run_command, args=(text,), daemon=True)
+            thread.start()
+            
+    def send_message_to_process(self, message):
+        """Отправка сообщения в процесс tap_encrypt"""
+        if self.process and self.master_fd:
+            try:
+                # Отправляем сообщение в процесс
+                message_bytes = (message + '\n').encode('utf-8')
+                os.write(self.master_fd, message_bytes)
+                
+                # Показываем в терминале что отправили
+                self.print_to_terminal(f"💬 Отправляем: {message}")
+                
+            except Exception as e:
+                self.print_to_terminal(f"❌ Ошибка отправки сообщения: {str(e)}")
         
     def run_command(self, command):
         """Выполнение команды в отдельном потоке"""
@@ -194,6 +250,9 @@ class EmbeddedTerminal(tk.Frame):
             self.master_fd = master_fd
             self.is_running = True
             
+            # Обновляем подсказку в поле ввода
+            self.update_command_prompt()
+            
             # Запускаем чтение вывода
             thread = threading.Thread(target=self.read_tap_output, daemon=True)
             thread.start()
@@ -273,6 +332,9 @@ class EmbeddedTerminal(tk.Frame):
             except:
                 pass
         
+        # Обновляем подсказку в поле ввода
+        self.update_command_prompt()
+        
         # Уведомляем родительский класс о завершении процесса
         self.parent_widget.after(0, self.parent_gui.on_process_ended)
 
@@ -322,7 +384,8 @@ class EncryptGUI:
             top_frame,
             text="Режим сообщений",
             variable=self.message_mode,
-            font=("Arial", 10)
+            font=("Arial", 10),
+            command=self.on_mode_change
         )
         self.message_check.pack(side="left", padx=(10, 0))
         
@@ -402,6 +465,12 @@ class EncryptGUI:
         # Запускаем в терминале
         self.terminal.run_tap_encrypt(cmd)
         
+        # Если включен режим сообщений, показываем подсказку
+        if self.message_mode.get():
+            self.terminal.print_to_terminal("")
+            self.terminal.print_to_terminal("💬 Режим сообщений активен!")
+            self.terminal.print_to_terminal("📝 Вводите текст в поле снизу и нажимайте Enter для отправки")
+        
     def stop_process(self):
         """Остановка процесса"""
         self.terminal.stop_process()
@@ -411,6 +480,17 @@ class EncryptGUI:
     def on_process_ended(self):
         """Обработчик завершения процесса"""
         self.start_button.config(text="Запустить задачу", bg="lightgreen", fg="black")
+        
+    def on_mode_change(self):
+        """Обработчик изменения режима сообщений"""
+        self.terminal.update_command_prompt()
+        
+        if self.message_mode.get():
+            self.terminal.print_to_terminal("💬 Режим сообщений включен")
+            self.terminal.print_to_terminal("📝 Вводите текст в поле снизу для отправки сообщений")
+        else:
+            self.terminal.print_to_terminal("🔧 Режим сообщений отключен")
+            self.terminal.print_to_terminal("💻 Поле ввода работает как обычная командная строка")
         
     def on_closing(self):
         """Обработчик закрытия окна"""
