@@ -1,31 +1,280 @@
 #!/usr/bin/env python3
 """
-LightCrypto GUI - Интерфейс расшифровки
-Запускает tap_decrypt в неймспейсе ns2
+LightCrypto GUI - Интерфейс расшифровки со встроенным терминалом
+Запускает tap_decrypt в неймспейсе ns2 во встроенном терминале
 """
 
 import tkinter as tk
-from tkinter import ttk, scrolledtext
+from tkinter import ttk, scrolledtext, font
 import subprocess
 import threading
-import queue
 import os
 import sys
-import time
+import signal
 import pty
 import select
+import fcntl
+
+class EmbeddedTerminal(tk.Frame):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent = parent
+        self.process = None
+        self.master_fd = None
+        self.is_running = False
+        
+        self.setup_terminal()
+        
+    def setup_terminal(self):
+        """Настройка встроенного терминала"""
+        # Заголовок терминала
+        terminal_header = tk.Frame(self)
+        terminal_header.pack(fill="x", pady=(0, 5))
+        
+        tk.Label(terminal_header, text="🖥️ Терминал", font=("Arial", 10, "bold")).pack(side="left")
+        
+        # Кнопка очистки терминала
+        self.clear_btn = tk.Button(
+            terminal_header,
+            text="Очистить",
+            command=self.clear_terminal,
+            font=("Arial", 8),
+            height=1
+        )
+        self.clear_btn.pack(side="right")
+        
+        # Терминал с черным фоном и зеленым текстом
+        self.terminal_text = scrolledtext.ScrolledText(
+            self,
+            height=20,
+            width=80,
+            bg="black",
+            fg="green",
+            font=("Consolas", 10),
+            wrap=tk.WORD,
+            insertbackground="green",
+            state=tk.DISABLED
+        )
+        self.terminal_text.pack(fill="both", expand=True)
+        
+        # Поле ввода команд
+        input_frame = tk.Frame(self)
+        input_frame.pack(fill="x", pady=(5, 0))
+        
+        tk.Label(input_frame, text="$", bg="black", fg="green", font=("Consolas", 10)).pack(side="left")
+        
+        self.command_entry = tk.Entry(
+            input_frame,
+            bg="black",
+            fg="green",
+            font=("Consolas", 10),
+            insertbackground="green"
+        )
+        self.command_entry.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        self.command_entry.bind("<Return>", self.execute_command)
+        
+        # Приветственное сообщение
+        self.print_to_terminal("🖥️ LightCrypto встроенный терминал")
+        self.print_to_terminal("💡 Введите команду или используйте кнопку 'Запустить задачу'")
+        self.print_to_terminal("")
+        
+    def print_to_terminal(self, text, color="green"):
+        """Вывод текста в терминал"""
+        self.terminal_text.config(state=tk.NORMAL)
+        self.terminal_text.insert(tk.END, text + "\n")
+        self.terminal_text.config(state=tk.DISABLED)
+        self.terminal_text.see(tk.END)
+        self.parent.update_idletasks()
+        
+    def clear_terminal(self):
+        """Очистка терминала"""
+        self.terminal_text.config(state=tk.NORMAL)
+        self.terminal_text.delete(1.0, tk.END)
+        self.terminal_text.config(state=tk.DISABLED)
+        self.print_to_terminal("🧹 Терминал очищен")
+        
+    def execute_command(self, event=None):
+        """Выполнение команды из поля ввода"""
+        command = self.command_entry.get().strip()
+        if not command:
+            return
+            
+        self.command_entry.delete(0, tk.END)
+        self.print_to_terminal(f"$ {command}")
+        
+        # Выполняем команду в отдельном потоке
+        thread = threading.Thread(target=self.run_command, args=(command,), daemon=True)
+        thread.start()
+        
+    def run_command(self, command):
+        """Выполнение команды в отдельном потоке"""
+        try:
+            # Запускаем команду через PTY для полного вывода
+            master_fd, slave_fd = pty.openpty()
+            
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                preexec_fn=os.setsid
+            )
+            
+            os.close(slave_fd)
+            
+            # Делаем master_fd неблокирующим
+            fl = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+            fcntl.fcntl(master_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+            
+            output_buffer = ""
+            
+            # Читаем вывод
+            while process.poll() is None:
+                ready, _, _ = select.select([master_fd], [], [], 0.1)
+                
+                if ready:
+                    try:
+                        chunk = os.read(master_fd, 1024).decode('utf-8', errors='ignore')
+                        if chunk:
+                            output_buffer += chunk
+                            # Обрабатываем полные строки
+                            while '\n' in output_buffer:
+                                line, output_buffer = output_buffer.split('\n', 1)
+                                clean_line = self.clean_ansi(line)
+                                if clean_line.strip():
+                                    self.parent.after(0, lambda text=clean_line: self.print_to_terminal(text))
+                    except (BlockingIOError, OSError):
+                        pass
+                        
+            # Обрабатываем остатки
+            if output_buffer.strip():
+                for line in output_buffer.split('\n'):
+                    clean_line = self.clean_ansi(line)
+                    if clean_line.strip():
+                        self.parent.after(0, lambda text=clean_line: self.print_to_terminal(text))
+            
+            os.close(master_fd)
+            
+            return_code = process.poll()
+            if return_code != 0:
+                self.parent.after(0, lambda: self.print_to_terminal(f"❌ Команда завершилась с кодом: {return_code}"))
+            else:
+                self.parent.after(0, lambda: self.print_to_terminal("✅ Команда выполнена успешно"))
+                
+        except Exception as e:
+            self.parent.after(0, lambda: self.print_to_terminal(f"❌ Ошибка выполнения: {str(e)}"))
+            
+    def clean_ansi(self, text):
+        """Очистка ANSI escape последовательностей"""
+        import re
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        return ansi_escape.sub('', text)
+        
+    def run_tap_decrypt(self, command):
+        """Специальный метод для запуска tap_decrypt"""
+        self.print_to_terminal("🚀 Запуск LightCrypto Decrypt...")
+        self.print_to_terminal(f"📝 Команда: {' '.join(command)}")
+        self.print_to_terminal("")
+        
+        try:
+            # Запускаем через PTY для полного вывода
+            master_fd, slave_fd = pty.openpty()
+            
+            self.process = subprocess.Popen(
+                command,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                preexec_fn=os.setsid
+            )
+            
+            os.close(slave_fd)
+            self.master_fd = master_fd
+            self.is_running = True
+            
+            # Запускаем чтение вывода
+            thread = threading.Thread(target=self.read_tap_output, daemon=True)
+            thread.start()
+            
+        except Exception as e:
+            self.print_to_terminal(f"❌ Ошибка запуска: {str(e)}")
+            
+    def read_tap_output(self):
+        """Чтение вывода tap_decrypt"""
+        try:
+            # Делаем master_fd неблокирующим
+            fl = fcntl.fcntl(self.master_fd, fcntl.F_GETFL)
+            fcntl.fcntl(self.master_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+            
+            output_buffer = ""
+            
+            while self.process.poll() is None:
+                ready, _, _ = select.select([self.master_fd], [], [], 0.1)
+                
+                if ready:
+                    try:
+                        chunk = os.read(self.master_fd, 1024).decode('utf-8', errors='ignore')
+                        if chunk:
+                            output_buffer += chunk
+                            # Обрабатываем полные строки
+                            while '\n' in output_buffer:
+                                line, output_buffer = output_buffer.split('\n', 1)
+                                clean_line = self.clean_ansi(line)
+                                if clean_line.strip():
+                                    self.parent.after(0, lambda text=clean_line: self.print_to_terminal(text))
+                    except (BlockingIOError, OSError):
+                        pass
+                        
+            # Процесс завершился
+            return_code = self.process.poll()
+            if return_code != 0:
+                self.parent.after(0, lambda: self.print_to_terminal(f"❌ Процесс завершился с кодом: {return_code}"))
+            else:
+                self.parent.after(0, lambda: self.print_to_terminal("✅ Процесс завершился"))
+                
+        except Exception as e:
+            self.parent.after(0, lambda: self.print_to_terminal(f"❌ Ошибка чтения: {str(e)}"))
+        finally:
+            self.is_running = False
+            if self.master_fd:
+                try:
+                    os.close(self.master_fd)
+                except:
+                    pass
+            self.parent.after(0, self.parent.on_process_ended)
+            
+    def stop_process(self):
+        """Остановка процесса"""
+        if self.process and self.is_running:
+            try:
+                self.print_to_terminal("🛑 Остановка процесса...")
+                pgid = os.getpgid(self.process.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                
+                try:
+                    self.process.wait(timeout=3)
+                    self.print_to_terminal("✅ Процесс остановлен")
+                except subprocess.TimeoutExpired:
+                    os.killpg(pgid, signal.SIGKILL)
+                    self.print_to_terminal("🔥 Процесс принудительно завершен")
+                    
+            except Exception as e:
+                self.print_to_terminal(f"❌ Ошибка остановки: {str(e)}")
+                
+            self.is_running = False
+            if self.master_fd:
+                try:
+                    os.close(self.master_fd)
+                except:
+                    pass
 
 class DecryptGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("decrypt")
-        self.root.geometry("500x600")
+        self.root.geometry("800x700")
         self.root.resizable(True, True)
-        
-        # Переменные для процесса
-        self.process = None
-        self.output_queue = queue.Queue()
-        self.is_running = False
         
         # Переменные для полей ввода
         self.ip_var = tk.StringVar(value="192.168.1.2")
@@ -37,80 +286,52 @@ class DecryptGUI:
         
     def setup_gui(self):
         """Создание интерфейса"""
+        # Верхняя панель с кнопками
+        top_frame = tk.Frame(self.root)
+        top_frame.pack(fill="x", padx=10, pady=5)
+        
         # Кнопка запуска/остановки
         self.start_button = tk.Button(
-            self.root, 
+            top_frame, 
             text="Запустить задачу",
             font=("Arial", 12),
-            height=2,
-            command=self.toggle_process
+            height=1,
+            command=self.toggle_process,
+            bg="lightblue"
         )
-        self.start_button.pack(pady=10, padx=20, fill="x")
+        self.start_button.pack(side="left", padx=(0, 10))
         
-        # Разделитель
-        separator1 = ttk.Separator(self.root, orient="horizontal")
-        separator1.pack(fill="x", padx=20, pady=5)
+        # Поля ввода в верхней панели
+        tk.Label(top_frame, text="IP:", font=("Arial", 10)).pack(side="left")
+        self.ip_entry = tk.Entry(top_frame, textvariable=self.ip_var, font=("Arial", 10), width=15)
+        self.ip_entry.pack(side="left", padx=(5, 10))
         
-        # Консоль
-        console_frame = tk.Frame(self.root)
-        console_frame.pack(pady=10, padx=20, fill="both", expand=True)
-        
-        console_label = tk.Label(console_frame, text="Консоль", font=("Arial", 10, "bold"))
-        console_label.pack(anchor="w")
-        
-        # Текстовое поле консоли с белым фоном и черным текстом
-        self.console_text = scrolledtext.ScrolledText(
-            console_frame,
-            height=15,
-            width=60,
-            bg="white",
-            fg="black",
-            font=("Consolas", 9),
-            wrap=tk.WORD
-        )
-        self.console_text.pack(fill="both", expand=True)
-        
-        # Разделитель
-        separator2 = ttk.Separator(self.root, orient="horizontal")
-        separator2.pack(fill="x", padx=20, pady=5)
-        
-        # Поля ввода
-        input_frame = tk.Frame(self.root)
-        input_frame.pack(pady=10, padx=20, fill="x")
-        
-        # IP адрес
-        ip_label = tk.Label(input_frame, text="Введите IP. По умолчанию 0.0.0.0 (слушать все)")
-        ip_label.pack(anchor="w")
-        
-        self.ip_entry = tk.Entry(input_frame, textvariable=self.ip_var, font=("Arial", 10))
-        self.ip_entry.pack(fill="x", pady=(0, 10))
-        
-        # Порт
-        port_label = tk.Label(input_frame, text="Введите порт. По умолчанию 12345")
-        port_label.pack(anchor="w")
-        
-        self.port_entry = tk.Entry(input_frame, textvariable=self.port_var, font=("Arial", 10))
-        self.port_entry.pack(fill="x", pady=(0, 10))
+        tk.Label(top_frame, text="Порт:", font=("Arial", 10)).pack(side="left")
+        self.port_entry = tk.Entry(top_frame, textvariable=self.port_var, font=("Arial", 10), width=8)
+        self.port_entry.pack(side="left", padx=(5, 10))
         
         # Режим сообщений
         self.message_check = tk.Checkbutton(
-            input_frame,
-            text="☐ Режим приема текстовых сообщений",
+            top_frame,
+            text="Режим сообщений",
             variable=self.message_mode,
             font=("Arial", 10)
         )
-        self.message_check.pack(anchor="w")
+        self.message_check.pack(side="left", padx=(10, 0))
         
-        # Запуск проверки вывода
-        self.root.after(50, self.process_output)
+        # Разделитель
+        separator = ttk.Separator(self.root, orient="horizontal")
+        separator.pack(fill="x", padx=10, pady=5)
+        
+        # Встроенный терминал
+        self.terminal = EmbeddedTerminal(self.root)
+        self.terminal.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         
     def check_sudo_access(self):
         """Проверка доступа sudo без пароля"""
-        self.console_text.insert(tk.END, "🔍 Проверка sudo доступа...\n")
-        self.console_text.see(tk.END)
+        self.terminal.print_to_terminal("🔍 Проверка sudo доступа...")
         
         try:
-            # Проверяем доступ к ip netns
             result = subprocess.run(
                 ["sudo", "-n", "ip", "netns", "list"], 
                 capture_output=True, 
@@ -119,45 +340,37 @@ class DecryptGUI:
             )
             
             if result.returncode == 0:
-                self.console_text.insert(tk.END, "✅ Sudo доступ настроен корректно\n")
-                self.console_text.insert(tk.END, "🌐 Доступные неймспейсы:\n")
+                self.terminal.print_to_terminal("✅ Sudo доступ настроен корректно")
+                self.terminal.print_to_terminal("🌐 Доступные неймспейсы:")
                 if result.stdout.strip():
                     for line in result.stdout.strip().split('\n'):
-                        self.console_text.insert(tk.END, f"   {line}\n")
+                        self.terminal.print_to_terminal(f"   {line}")
                 else:
-                    self.console_text.insert(tk.END, "   (неймспейсы не найдены)\n")
+                    self.terminal.print_to_terminal("   (неймспейсы не найдены)")
                 return True
             else:
-                self.console_text.insert(tk.END, "❌ Требуется настройка sudo доступа\n")
-                self.console_text.insert(tk.END, "💡 Выполните: bash setup_sudo.sh\n")
+                self.terminal.print_to_terminal("❌ Требуется настройка sudo доступа")
+                self.terminal.print_to_terminal("💡 Выполните: bash setup_sudo.sh")
                 return False
                 
         except subprocess.TimeoutExpired:
-            self.console_text.insert(tk.END, "❌ Sudo запрашивает пароль\n")
-            self.console_text.insert(tk.END, "💡 Выполните: bash setup_sudo.sh\n")
+            self.terminal.print_to_terminal("❌ Sudo запрашивает пароль")
+            self.terminal.print_to_terminal("💡 Выполните: bash setup_sudo.sh")
             return False
         except Exception as e:
-            self.console_text.insert(tk.END, f"❌ Ошибка проверки sudo: {str(e)}\n")
+            self.terminal.print_to_terminal(f"❌ Ошибка проверки sudo: {str(e)}")
             return False
-        finally:
-            self.console_text.see(tk.END)
             
     def build_command(self):
         """Построение команды для запуска tap_decrypt"""
         cmd = ["sudo", "ip", "netns", "exec", "ns2", "./build/tap_decrypt"]
         
-        # Если включен режим сообщений
         if self.message_mode.get():
             cmd.append("--msg")
         
-        # Добавляем IP и порт
-        # Для decrypt программы: первый аргумент может быть портом или IP+портом
         ip = self.ip_var.get().strip()
         port = self.port_var.get().strip() or "12345"
         
-        # tap_decrypt принимает аргументы по-разному:
-        # - если один аргумент: это порт (слушает 0.0.0.0:порт)
-        # - если два аргумента: IP и порт
         if not ip or ip == "0.0.0.0":
             cmd.append(port)  # только порт
         else:
@@ -167,194 +380,37 @@ class DecryptGUI:
         
     def toggle_process(self):
         """Запуск или остановка процесса"""
-        if not self.is_running:
+        if not self.terminal.is_running:
             self.start_process()
         else:
             self.stop_process()
             
     def start_process(self):
         """Запуск процесса tap_decrypt"""
-        # Проверяем существование исполняемого файла
         if not os.path.exists("./build/tap_decrypt"):
-            self.console_text.insert(tk.END, "❌ Файл ./build/tap_decrypt не найден\n")
-            self.console_text.insert(tk.END, "💡 Выполните сборку: mkdir -p build && cd build && cmake .. && make\n")
-            self.console_text.see(tk.END)
+            self.terminal.print_to_terminal("❌ Файл ./build/tap_decrypt не найден")
+            self.terminal.print_to_terminal("💡 Выполните сборку: mkdir -p build && cd build && cmake .. && make")
             return
             
         cmd = self.build_command()
         
-        # Показываем команду в консоли
-        self.console_text.insert(tk.END, f"\n{'='*50}\n")
-        self.console_text.insert(tk.END, f"🚀 Запуск команды: {' '.join(cmd)}\n")
-        self.console_text.insert(tk.END, f"{'='*50}\n")
-        self.console_text.see(tk.END)
+        self.start_button.config(text="Остановить задачу", bg="red", fg="white")
         
-        try:
-            # Создаем окружение для разблокировки буферизации
-            env = os.environ.copy()
-            env.update({
-                'PYTHONUNBUFFERED': '1',
-                'LC_ALL': 'C.UTF-8',
-                'TERM': 'xterm'  # Эмулируем терминал
-            })
-            
-            # Используем pty для эмуляции терминала - это заставляет программы
-            # выводить данные немедленно, как если бы они были в интерактивном режиме
-            master_fd, slave_fd = pty.openpty()
-            
-            self.process = subprocess.Popen(
-                cmd,
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                env=env,
-                preexec_fn=os.setsid  # Создаем новую группу процессов
-            )
-            
-            # Закрываем slave_fd в родительском процессе
-            os.close(slave_fd)
-            
-            # Сохраняем master_fd для чтения
-            self.master_fd = master_fd
-            
-            self.console_text.insert(tk.END, "🔧 Используем PTY для эмуляции терминала\n")
-            
-            self.is_running = True
-            self.start_button.config(text="Остановить задачу", bg="red", fg="white")
-            
-            # Запускаем поток для чтения вывода
-            output_thread = threading.Thread(target=self.read_output)
-            output_thread.daemon = True
-            output_thread.start()
-            
-        except Exception as e:
-            self.console_text.insert(tk.END, f"❌ Ошибка запуска: {str(e)}\n")
-            self.console_text.see(tk.END)
-            
+        # Запускаем в терминале
+        self.terminal.run_tap_decrypt(cmd)
+        
     def stop_process(self):
         """Остановка процесса"""
-        if self.process:
-            try:
-                # Завершаем всю группу процессов
-                os.killpg(os.getpgid(self.process.pid), 15)  # SIGTERM
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(os.getpgid(self.process.pid), 9)  # SIGKILL
-                except:
-                    self.process.kill()
-            except Exception as e:
-                self.console_text.insert(tk.END, f"❌ Ошибка остановки: {str(e)}\n")
-                
-        # Закрываем master_fd если он есть
-        if hasattr(self, 'master_fd'):
-            try:
-                os.close(self.master_fd)
-            except:
-                pass
-                
-        self.is_running = False
-        self.process = None
-        self.start_button.config(text="Запустить задачу", bg="SystemButtonFace", fg="black")
+        self.terminal.stop_process()
         
-        self.console_text.insert(tk.END, "\n🛑 Процесс остановлен\n")
-        self.console_text.see(tk.END)
-        
-    def read_output(self):
-        """Чтение вывода процесса в отдельном потоке через PTY"""
-        if not self.process or not hasattr(self, 'master_fd'):
-            return
-            
-        try:
-            import fcntl
-            
-            # Делаем master_fd неблокирующим
-            fl = fcntl.fcntl(self.master_fd, fcntl.F_GETFL)
-            fcntl.fcntl(self.master_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-            
-            output_buffer = ""
-            
-            # Читаем вывод из PTY
-            while self.process.poll() is None:
-                # Проверяем доступность данных для чтения
-                ready, _, _ = select.select([self.master_fd], [], [], 0.1)
-                
-                if ready:
-                    try:
-                        chunk = os.read(self.master_fd, 1024).decode('utf-8', errors='ignore')
-                        if chunk:
-                            output_buffer += chunk
-                            # Обрабатываем полные строки
-                            while '\n' in output_buffer:
-                                line, output_buffer = output_buffer.split('\n', 1)
-                                # Очищаем от управляющих символов терминала
-                                clean_line = self.clean_terminal_output(line)
-                                if clean_line.strip():
-                                    self.output_queue.put(clean_line.rstrip())
-                    except (BlockingIOError, OSError):
-                        # Нет данных для чтения
-                        pass
-                else:
-                    # Небольшая пауза
-                    time.sleep(0.01)
-                    
-            # Обрабатываем остатки буфера
-            if output_buffer.strip():
-                for line in output_buffer.split('\n'):
-                    clean_line = self.clean_terminal_output(line)
-                    if clean_line.strip():
-                        self.output_queue.put(clean_line.strip())
-                    
-            # Процесс завершился
-            return_code = self.process.poll()
-            if return_code != 0:
-                self.output_queue.put(f"❌ Процесс завершился с кодом: {return_code}")
-            else:
-                self.output_queue.put("✅ Процесс завершился успешно")
-                
-            self.output_queue.put("PROCESS_ENDED")
-                
-        except Exception as e:
-            self.output_queue.put(f"❌ Ошибка чтения вывода: {str(e)}")
-            self.output_queue.put("PROCESS_ENDED")
-        finally:
-            # Закрываем master_fd
-            if hasattr(self, 'master_fd'):
-                try:
-                    os.close(self.master_fd)
-                except:
-                    pass
-                    
-    def clean_terminal_output(self, line):
-        """Очистка строки от управляющих символов терминала"""
-        import re
-        # Удаляем ANSI escape последовательности
-        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-        return ansi_escape.sub('', line)
-            
-    def process_output(self):
-        """Обработка вывода из очереди"""
-        try:
-            while True:
-                line = self.output_queue.get_nowait()
-                if line == "PROCESS_ENDED":
-                    self.is_running = False
-                    self.process = None
-                    self.start_button.config(text="Запустить задачу", bg="SystemButtonFace", fg="black")
-                    break
-                else:
-                    self.console_text.insert(tk.END, line + "\n")
-                    self.console_text.see(tk.END)
-        except queue.Empty:
-            pass
-            
-        # Планируем следующую проверку (чаще для лучшей отзывчивости)
-        self.root.after(50, self.process_output)
+    def on_process_ended(self):
+        """Обработчик завершения процесса"""
+        self.start_button.config(text="Запустить задачу", bg="lightblue", fg="black")
         
     def on_closing(self):
         """Обработчик закрытия окна"""
-        if self.is_running:
-            self.stop_process()
+        if self.terminal.is_running:
+            self.terminal.stop_process()
         self.root.destroy()
 
 def main():
@@ -365,8 +421,8 @@ def main():
     try:
         root.mainloop()
     except KeyboardInterrupt:
-        if app.is_running:
-            app.stop_process()
+        if app.terminal.is_running:
+            app.terminal.stop_process()
         sys.exit(0)
 
 if __name__ == "__main__":
