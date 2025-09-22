@@ -16,9 +16,10 @@ import select
 import fcntl
 
 class EmbeddedTerminal(tk.Frame):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.parent = parent
+    def __init__(self, parent_widget, parent_gui):
+        super().__init__(parent_widget)
+        self.parent_widget = parent_widget  # tkinter родитель
+        self.parent_gui = parent_gui        # GUI класс с методами
         self.process = None
         self.master_fd = None
         self.is_running = False
@@ -43,16 +44,16 @@ class EmbeddedTerminal(tk.Frame):
         )
         self.clear_btn.pack(side="right")
         
-        # Терминал с черным фоном и зеленым текстом
+        # Терминал с белым фоном и черным текстом
         self.terminal_text = scrolledtext.ScrolledText(
             self,
             height=20,
             width=80,
-            bg="black",
-            fg="green",
+            bg="white",
+            fg="black",
             font=("Consolas", 10),
             wrap=tk.WORD,
-            insertbackground="green",
+            insertbackground="black",
             state=tk.DISABLED
         )
         self.terminal_text.pack(fill="both", expand=True)
@@ -61,14 +62,14 @@ class EmbeddedTerminal(tk.Frame):
         input_frame = tk.Frame(self)
         input_frame.pack(fill="x", pady=(5, 0))
         
-        tk.Label(input_frame, text="$", bg="black", fg="green", font=("Consolas", 10)).pack(side="left")
+        tk.Label(input_frame, text="$", bg="white", fg="black", font=("Consolas", 10)).pack(side="left")
         
         self.command_entry = tk.Entry(
             input_frame,
-            bg="black",
-            fg="green",
+            bg="white",
+            fg="black",
             font=("Consolas", 10),
-            insertbackground="green"
+            insertbackground="black"
         )
         self.command_entry.pack(side="left", fill="x", expand=True, padx=(5, 0))
         self.command_entry.bind("<Return>", self.execute_command)
@@ -78,13 +79,13 @@ class EmbeddedTerminal(tk.Frame):
         self.print_to_terminal("💡 Введите команду или используйте кнопку 'Запустить задачу'")
         self.print_to_terminal("")
         
-    def print_to_terminal(self, text, color="green"):
+    def print_to_terminal(self, text, color="black"):
         """Вывод текста в терминал"""
         self.terminal_text.config(state=tk.NORMAL)
         self.terminal_text.insert(tk.END, text + "\n")
         self.terminal_text.config(state=tk.DISABLED)
         self.terminal_text.see(tk.END)
-        self.parent.update_idletasks()
+        self.parent_widget.update_idletasks()
         
     def clear_terminal(self):
         """Очистка терминала"""
@@ -143,7 +144,7 @@ class EmbeddedTerminal(tk.Frame):
                                 line, output_buffer = output_buffer.split('\n', 1)
                                 clean_line = self.clean_ansi(line)
                                 if clean_line.strip():
-                                    self.parent.after(0, lambda text=clean_line: self.print_to_terminal(text))
+                                    self.parent_widget.after(0, lambda text=clean_line: self.print_to_terminal(text))
                     except (BlockingIOError, OSError):
                         pass
                         
@@ -158,12 +159,12 @@ class EmbeddedTerminal(tk.Frame):
             
             return_code = process.poll()
             if return_code != 0:
-                self.parent.after(0, lambda: self.print_to_terminal(f"❌ Команда завершилась с кодом: {return_code}"))
+                self.parent_widget.after(0, lambda: self.print_to_terminal(f"❌ Команда завершилась с кодом: {return_code}"))
             else:
-                self.parent.after(0, lambda: self.print_to_terminal("✅ Команда выполнена успешно"))
+                self.parent_widget.after(0, lambda: self.print_to_terminal("✅ Команда выполнена успешно"))
                 
         except Exception as e:
-            self.parent.after(0, lambda: self.print_to_terminal(f"❌ Ошибка выполнения: {str(e)}"))
+            self.parent_widget.after(0, lambda: self.print_to_terminal(f"❌ Ошибка выполнения: {str(e)}"))
             
     def clean_ansi(self, text):
         """Очистка ANSI escape последовательностей"""
@@ -222,19 +223,19 @@ class EmbeddedTerminal(tk.Frame):
                                 line, output_buffer = output_buffer.split('\n', 1)
                                 clean_line = self.clean_ansi(line)
                                 if clean_line.strip():
-                                    self.parent.after(0, lambda text=clean_line: self.print_to_terminal(text))
+                                    self.parent_widget.after(0, lambda text=clean_line: self.print_to_terminal(text))
                     except (BlockingIOError, OSError):
                         pass
                         
             # Процесс завершился
             return_code = self.process.poll()
             if return_code != 0:
-                self.parent.after(0, lambda: self.print_to_terminal(f"❌ Процесс завершился с кодом: {return_code}"))
+                self.parent_widget.after(0, lambda: self.print_to_terminal(f"❌ Процесс завершился с кодом: {return_code}"))
             else:
-                self.parent.after(0, lambda: self.print_to_terminal("✅ Процесс завершился"))
+                self.parent_widget.after(0, lambda: self.print_to_terminal("✅ Процесс завершился"))
                 
         except Exception as e:
-            self.parent.after(0, lambda: self.print_to_terminal(f"❌ Ошибка чтения: {str(e)}"))
+            self.parent_widget.after(0, lambda: self.print_to_terminal(f"❌ Ошибка чтения: {str(e)}"))
         finally:
             self.is_running = False
             if self.master_fd:
@@ -242,7 +243,7 @@ class EmbeddedTerminal(tk.Frame):
                     os.close(self.master_fd)
                 except:
                     pass
-            self.parent.after(0, self.parent.on_process_ended)
+            self.parent_widget.after(0, self.parent_gui.on_process_ended)
             
     def stop_process(self):
         """Остановка процесса"""
@@ -261,13 +262,19 @@ class EmbeddedTerminal(tk.Frame):
                     
             except Exception as e:
                 self.print_to_terminal(f"❌ Ошибка остановки: {str(e)}")
-                
-            self.is_running = False
-            if self.master_fd:
-                try:
-                    os.close(self.master_fd)
-                except:
-                    pass
+        
+        # ПРИНУДИТЕЛЬНО сбрасываем все состояния независимо от условий
+        self.is_running = False
+        self.process = None
+        if self.master_fd:
+            try:
+                os.close(self.master_fd)
+                self.master_fd = None
+            except:
+                pass
+        
+        # Уведомляем родительский класс о завершении процесса
+        self.parent_widget.after(0, self.parent_gui.on_process_ended)
 
 class EncryptGUI:
     def __init__(self, root):
@@ -324,7 +331,7 @@ class EncryptGUI:
         separator.pack(fill="x", padx=10, pady=5)
         
         # Встроенный терминал
-        self.terminal = EmbeddedTerminal(self.root)
+        self.terminal = EmbeddedTerminal(self.root, self)
         self.terminal.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         
     def check_sudo_access(self):
@@ -398,6 +405,8 @@ class EncryptGUI:
     def stop_process(self):
         """Остановка процесса"""
         self.terminal.stop_process()
+        # Принудительно сбрасываем состояние кнопки
+        self.start_button.config(text="Запустить задачу", bg="lightgreen", fg="black")
         
     def on_process_ended(self):
         """Обработчик завершения процесса"""
