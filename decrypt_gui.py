@@ -14,6 +14,7 @@ import signal
 import pty
 import select
 import fcntl
+import shutil
 
 class EmbeddedTerminal(tk.Frame):
     def __init__(self, parent_widget, parent_gui):
@@ -391,8 +392,11 @@ class DecryptGUI:
 
         tk.Label(svc_frame, text="Сервисы:", font=("Arial", 10, "bold")).pack(side="left", padx=(0, 10))
 
-        self.iperf_server_btn = tk.Button(svc_frame, text="iperf сервер", font=("Arial", 9), command=self.run_iperf_server)
-        self.iperf_server_btn.pack(side="left")
+        self.iperf_tcp_server_btn = tk.Button(svc_frame, text="iperf TCP сервер", font=("Arial", 9), command=self.run_iperf_tcp_server)
+        self.iperf_tcp_server_btn.pack(side="left")
+
+        self.iperf_udp_server_btn = tk.Button(svc_frame, text="iperf UDP сервер", font=("Arial", 9), command=self.run_iperf_udp_server)
+        self.iperf_udp_server_btn.pack(side="left", padx=(5, 0))
 
         self.tcpdump_tap_btn = tk.Button(svc_frame, text="tcpdump tap", font=("Arial", 9), command=self.run_tcpdump_tap)
         self.tcpdump_tap_btn.pack(side="left", padx=(5, 0))
@@ -503,30 +507,58 @@ class DecryptGUI:
         if self.message_mode.get():
             self.terminal.print_to_terminal("💬 Режим сообщений включен")
             # Отключаем сервисы Ethernet-трафика
-            for btn in [self.iperf_server_btn, self.tcpdump_tap_btn]:
+            for btn in [self.iperf_tcp_server_btn, self.iperf_udp_server_btn, self.tcpdump_tap_btn]:
                 btn.config(state=tk.DISABLED)
             self.terminal.print_to_terminal("⛔ iperf/tcpdump отключены в режиме сообщений")
         else:
             self.terminal.print_to_terminal("🔧 Режим сообщений отключен")
-            for btn in [self.iperf_server_btn, self.tcpdump_tap_btn]:
+            for btn in [self.iperf_tcp_server_btn, self.iperf_udp_server_btn, self.tcpdump_tap_btn]:
                 btn.config(state=tk.NORMAL)
 
     # --- Сервисы для тестирования (в соответствии с README) ---
+    def _find_terminal_emulator(self):
+        for name in ["gnome-terminal", "konsole", "xterm", "x-terminal-emulator"]:
+            if shutil.which(name):
+                return name
+        return None
+
+    def _open_external_terminal(self, title, command_str):
+        term = self._find_terminal_emulator()
+        if not term:
+            # fallback — выполним внутри встроенного терминала
+            threading.Thread(target=self.terminal.run_command, args=(command_str,), daemon=True).start()
+            return
+        try:
+            if term == "gnome-terminal":
+                subprocess.Popen(["gnome-terminal", "--title", title, "--", "bash", "-lc", f"{command_str}; echo; read -p 'Нажмите Enter для закрытия...'"], preexec_fn=os.setsid)
+            elif term == "konsole":
+                subprocess.Popen(["konsole", "-p", f"tabtitle={title}", "-e", "bash", "-lc", f"{command_str}; echo; read -p 'Enter...'"], preexec_fn=os.setsid)
+            else:
+                subprocess.Popen([term, "-T", title, "-e", "bash", "-lc", f"{command_str}; echo; read -p 'Enter...'"], preexec_fn=os.setsid)
+        except Exception:
+            threading.Thread(target=self.terminal.run_command, args=(command_str,), daemon=True).start()
+
     def _ns_or_local_prefix(self):
         # Для приемника: команды выполняются в ns2 в локальном режиме
         if self.network_mode.get():
             return []
         return ["sudo", "ip", "netns", "exec", "ns2"]
 
-    def run_iperf_server(self):
+    def run_iperf_tcp_server(self):
         if self.message_mode.get():
-            self.terminal.print_to_terminal("⚠️ Режим сообщений активен — iperf сервер недоступен")
+            self.terminal.print_to_terminal("⚠️ Режим сообщений активен — iperf TCP сервер недоступен")
             return
-        bind_ip = "10.0.0.2" if not self.network_mode.get() else (self.ip_var.get().strip() or "0.0.0.0")
-        cmd_list = self._ns_or_local_prefix() + ["iperf", "-s", "-B", bind_ip]
-        cmd = " ".join(cmd_list) if self._ns_or_local_prefix() else f"iperf -s -B {bind_ip}"
-        self.terminal.print_to_terminal(f"🛰 Запуск iperf сервера на {bind_ip}...")
-        threading.Thread(target=self.terminal.run_command, args=(cmd,), daemon=True).start()
+        cmd = "sudo ip netns exec ns2 iperf -s -B 10.0.0.2"
+        self.terminal.print_to_terminal("🛰 Открываю iperf TCP сервер ns2 на 10.0.0.2...")
+        self._open_external_terminal("iperf TCP server (ns2)", cmd)
+
+    def run_iperf_udp_server(self):
+        if self.message_mode.get():
+            self.terminal.print_to_terminal("⚠️ Режим сообщений активен — iperf UDP сервер недоступен")
+            return
+        cmd = "sudo ip netns exec ns2 iperf -s -u -B 10.0.0.2"
+        self.terminal.print_to_terminal("🛰 Открываю iperf UDP сервер ns2 на 10.0.0.2...")
+        self._open_external_terminal("iperf UDP server (ns2)", cmd)
 
     def run_tcpdump_tap(self):
         if self.message_mode.get():
@@ -536,10 +568,9 @@ class DecryptGUI:
         if self.network_mode.get():
             self.terminal.print_to_terminal("ℹ️ tcpdump для сетевого режима настрой вручную (нет неймспейса)")
             return
-        cmd_list = ["sudo", "ip", "netns", "exec", "ns2", "tcpdump", "-i", "tap1", "-v"]
-        cmd = " ".join(cmd_list)
-        self.terminal.print_to_terminal("🔎 tcpdump на ns2/tap1...")
-        threading.Thread(target=self.terminal.run_command, args=(cmd,), daemon=True).start()
+        cmd = "sudo ip netns exec ns2 tcpdump -i tap1 -v"
+        self.terminal.print_to_terminal("🔎 Открываю tcpdump на ns2/tap1...")
+        self._open_external_terminal("tcpdump ns2/tap1", cmd)
         
     def on_closing(self):
         """Обработчик закрытия окна"""
