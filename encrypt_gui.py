@@ -209,7 +209,7 @@ class EmbeddedTerminal(tk.Frame):
                 for line in output_buffer.split('\n'):
                     clean_line = self.clean_ansi(line)
                     if clean_line.strip():
-                        self.parent.after(0, lambda text=clean_line: self.print_to_terminal(text))
+                        self.parent_widget.after(0, lambda text=clean_line: self.print_to_terminal(text))
             
             os.close(master_fd)
             
@@ -349,19 +349,24 @@ class EncryptGUI:
         self.ip_var = tk.StringVar(value="192.168.1.2")
         self.port_var = tk.StringVar(value="12345")
         self.message_mode = tk.BooleanVar(value=False)
+        self.network_mode = tk.BooleanVar(value=False)  # False = локальный, True = сетевой
         
         self.setup_gui()
         self.check_sudo_access()
         
     def setup_gui(self):
         """Создание интерфейса"""
-        # Верхняя панель с кнопками
+        # Верхняя панель с кнопками (2 строки)
         top_frame = tk.Frame(self.root)
         top_frame.pack(fill="x", padx=10, pady=5)
-        
+        top_row1 = tk.Frame(top_frame)
+        top_row1.pack(fill="x")
+        top_row2 = tk.Frame(top_frame)
+        top_row2.pack(fill="x", pady=(4, 0))
+
         # Кнопка запуска/остановки
         self.start_button = tk.Button(
-            top_frame, 
+            top_row1, 
             text="Запустить задачу",
             font=("Arial", 12),
             height=1,
@@ -369,23 +374,72 @@ class EncryptGUI:
             bg="lightgreen"
         )
         self.start_button.pack(side="left", padx=(0, 10))
+
+        # Кнопки управления неймспейсами
+        ns_btn_frame = tk.Frame(top_row2)
+        ns_btn_frame.pack(side="left", padx=(0, 10))
+        self.ns_setup_btn = tk.Button(
+            ns_btn_frame,
+            text="Создать неймспейсы",
+            font=("Arial", 9),
+            command=self.setup_namespaces,
+            bg="#eef6ff"
+        )
+        self.ns_setup_btn.pack(side="left")
+        self.ns_cleanup_btn = tk.Button(
+            ns_btn_frame,
+            text="Очистить",
+            font=("Arial", 9),
+            command=self.cleanup_namespaces,
+            bg="#ffecec"
+        )
+        self.ns_cleanup_btn.pack(side="left", padx=(5, 0))
+        
+        # Переключатель режимов
+        mode_frame = tk.Frame(top_row1)
+        mode_frame.pack(side="left", padx=(0, 10))
+        
+        tk.Label(mode_frame, text="Режим:", font=("Arial", 10, "bold")).pack()
+        
+        mode_radio_frame = tk.Frame(mode_frame)
+        mode_radio_frame.pack()
+        
+        self.local_radio = tk.Radiobutton(
+            mode_radio_frame,
+            text="Локальный",
+            variable=self.network_mode,
+            value=False,
+            command=self.on_mode_change,
+            font=("Arial", 9)
+        )
+        self.local_radio.pack(side="left")
+        
+        self.network_radio = tk.Radiobutton(
+            mode_radio_frame,
+            text="Сетевой",
+            variable=self.network_mode,
+            value=True,
+            command=self.on_mode_change,
+            font=("Arial", 9)
+        )
+        self.network_radio.pack(side="left")
         
         # Поля ввода в верхней панели
-        tk.Label(top_frame, text="IP:", font=("Arial", 10)).pack(side="left")
-        self.ip_entry = tk.Entry(top_frame, textvariable=self.ip_var, font=("Arial", 10), width=15)
+        tk.Label(top_row1, text="IP:", font=("Arial", 10)).pack(side="left")
+        self.ip_entry = tk.Entry(top_row1, textvariable=self.ip_var, font=("Arial", 10), width=15)
         self.ip_entry.pack(side="left", padx=(5, 10))
-        
-        tk.Label(top_frame, text="Порт:", font=("Arial", 10)).pack(side="left")
-        self.port_entry = tk.Entry(top_frame, textvariable=self.port_var, font=("Arial", 10), width=8)
+ 
+        tk.Label(top_row1, text="Порт:", font=("Arial", 10)).pack(side="left")
+        self.port_entry = tk.Entry(top_row1, textvariable=self.port_var, font=("Arial", 10), width=8)
         self.port_entry.pack(side="left", padx=(5, 10))
         
         # Режим сообщений
         self.message_check = tk.Checkbutton(
-            top_frame,
+            top_row2,
             text="Режим сообщений",
             variable=self.message_mode,
             font=("Arial", 10),
-            command=self.on_mode_change
+            command=self.on_message_mode_change
         )
         self.message_check.pack(side="left", padx=(10, 0))
         
@@ -396,6 +450,27 @@ class EncryptGUI:
         # Встроенный терминал
         self.terminal = EmbeddedTerminal(self.root, self)
         self.terminal.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # Панель генерации трафика
+        traffic_frame = tk.Frame(self.root)
+        traffic_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        tk.Label(traffic_frame, text="Генерация трафика:", font=("Arial", 10, "bold")).pack(side="left", padx=(0, 10))
+
+        self.ping_btn = tk.Button(traffic_frame, text="ping 10.0.0.2", font=("Arial", 9), command=self.run_ping)
+        self.ping_btn.pack(side="left")
+
+        self.iperf_tcp_btn = tk.Button(traffic_frame, text="iperf TCP клиент", font=("Arial", 9), command=self.run_iperf_tcp_client)
+        self.iperf_tcp_btn.pack(side="left", padx=(5, 0))
+
+        self.iperf_udp_btn = tk.Button(traffic_frame, text="iperf UDP клиент", font=("Arial", 9), command=self.run_iperf_udp_client)
+        self.iperf_udp_btn.pack(side="left", padx=(5, 0))
+
+        self.hping_syn_btn = tk.Button(traffic_frame, text="hping3 SYN :80", font=("Arial", 9), command=self.run_hping_syn)
+        self.hping_syn_btn.pack(side="left", padx=(5, 0))
+
+        self.hping_udp_btn = tk.Button(traffic_frame, text="hping3 UDP :5000", font=("Arial", 9), command=self.run_hping_udp)
+        self.hping_udp_btn.pack(side="left", padx=(5, 0))
         
     def check_sudo_access(self):
         """Проверка доступа sudo без пароля"""
@@ -433,7 +508,12 @@ class EncryptGUI:
             
     def build_command(self):
         """Построение команды для запуска tap_encrypt"""
-        cmd = ["sudo", "ip", "netns", "exec", "ns1", "./build/tap_encrypt"]
+        if self.network_mode.get():
+            # Сетевой режим - запуск без неймспейса
+            cmd = ["sudo", "./build/tap_encrypt"]
+        else:
+            # Локальный режим - запуск в неймспейсе ns1
+            cmd = ["sudo", "ip", "netns", "exec", "ns1", "./build/tap_encrypt"]
         
         if self.message_mode.get():
             cmd.append("--msg")
@@ -482,21 +562,135 @@ class EncryptGUI:
         self.start_button.config(text="Запустить задачу", bg="lightgreen", fg="black")
         
     def on_mode_change(self):
+        """Обработчик изменения режима работы (локальный/сетевой)"""
+        if self.network_mode.get():
+            self.terminal.print_to_terminal("🌐 Переключен сетевой режим")
+            self.terminal.print_to_terminal("📡 Команда: sudo ./build/tap_encrypt IP PORT")
+            self.terminal.print_to_terminal("💡 Для работы на двух устройствах")
+        else:
+            self.terminal.print_to_terminal("🏠 Переключен локальный режим")
+            self.terminal.print_to_terminal("📡 Команда: sudo ip netns exec ns1 ./build/tap_encrypt IP PORT")
+            self.terminal.print_to_terminal("💡 Для тестирования на одном компьютере с неймспейсами")
+            
+    def on_message_mode_change(self):
         """Обработчик изменения режима сообщений"""
         self.terminal.update_command_prompt()
-        
+ 
         if self.message_mode.get():
             self.terminal.print_to_terminal("💬 Режим сообщений включен")
             self.terminal.print_to_terminal("📝 Вводите текст в поле снизу для отправки сообщений")
+            # Отключаем генерацию Ethernet-трафика
+            for btn in [self.ping_btn, self.iperf_tcp_btn, self.iperf_udp_btn, self.hping_syn_btn, self.hping_udp_btn]:
+                btn.config(state=tk.DISABLED)
+            self.terminal.print_to_terminal("⛔ Генерация Ethernet-трафика отключена в режиме сообщений")
         else:
             self.terminal.print_to_terminal("🔧 Режим сообщений отключен")
             self.terminal.print_to_terminal("💻 Поле ввода работает как обычная командная строка")
+            # Включаем генерацию Ethernet-трафика
+            for btn in [self.ping_btn, self.iperf_tcp_btn, self.iperf_udp_btn, self.hping_syn_btn, self.hping_udp_btn]:
+                btn.config(state=tk.NORMAL)
         
     def on_closing(self):
         """Обработчик закрытия окна"""
         if self.terminal.is_running:
             self.terminal.stop_process()
         self.root.destroy()
+
+    def setup_namespaces(self):
+        """Создание неймспейсов и интерфейсов по README"""
+        cmds = [
+            "sudo ip netns delete ns1 2>/dev/null",
+            "sudo ip netns delete ns2 2>/dev/null",
+            "sudo killall tap_encrypt tap_decrypt tcpdump 2>/dev/null || true",
+            "sudo ip netns add ns1",
+            "sudo ip netns add ns2",
+            "sudo ip netns exec ns1 ip tuntap add dev tap0 mode tap",
+            "sudo ip netns exec ns1 ip addr add 10.0.0.1/24 dev tap0",
+            "sudo ip netns exec ns1 ip link set tap0 up",
+            "sudo ip netns exec ns2 ip tuntap add dev tap1 mode tap",
+            "sudo ip netns exec ns2 ip addr add 10.0.0.2/24 dev tap1",
+            "sudo ip netns exec ns2 ip link set tap1 up",
+            "sudo ip link add veth1 type veth peer name veth2",
+            "sudo ip link set veth1 netns ns1",
+            "sudo ip link set veth2 netns ns2",
+            "sudo ip netns exec ns1 ip addr add 192.168.1.1/24 dev veth1",
+            "sudo ip netns exec ns1 ip link set veth1 up",
+            "sudo ip netns exec ns2 ip addr add 192.168.1.2/24 dev veth2",
+            "sudo ip netns exec ns2 ip link set veth2 up",
+            "sudo ip netns exec ns1 ip route add default via 192.168.1.2 || true",
+            "sudo ip netns exec ns2 ip route add default via 192.168.1.1 || true",
+            "sudo ip netns exec ns1 sysctl -w net.ipv6.conf.all.disable_ipv6=1",
+            "sudo ip netns exec ns2 sysctl -w net.ipv6.conf.all.disable_ipv6=1"
+        ]
+        full_cmd = " && ".join(cmds)
+        self.terminal.print_to_terminal("🔧 Настраиваем неймспейсы по README...")
+        threading.Thread(target=self.terminal.run_command, args=(full_cmd,), daemon=True).start()
+
+    def cleanup_namespaces(self):
+        """Удаление неймспейсов и остановка процессов"""
+        cmds = [
+            "sudo ip netns delete ns1 2>/dev/null",
+            "sudo ip netns delete ns2 2>/dev/null",
+            "sudo killall tap_encrypt tap_decrypt tcpdump 2>/dev/null || true"
+        ]
+        full_cmd = " && ".join(cmds)
+        self.terminal.print_to_terminal("🧹 Очищаем ресурсы...")
+        threading.Thread(target=self.terminal.run_command, args=(full_cmd,), daemon=True).start()
+
+    # --- Генерация трафика (в соответствии с README) ---
+    def _ns_or_local_prefix(self):
+        # Команды трафика должны выполняться из ns1 в локальном режиме
+        if self.network_mode.get():
+            return []
+        return ["sudo", "ip", "netns", "exec", "ns1"]
+
+    def run_ping(self):
+        if self.message_mode.get():
+            self.terminal.print_to_terminal("⚠️ Режим сообщений активен — ping недоступен")
+            return
+        cmd = " ".join(self._ns_or_local_prefix() + ["ping", "10.0.0.2"]) if self._ns_or_local_prefix() else "ping 10.0.0.2"
+        self.terminal.print_to_terminal("📡 Запуск ping 10.0.0.2...")
+        threading.Thread(target=self.terminal.run_command, args=(cmd,), daemon=True).start()
+
+    def run_iperf_tcp_client(self):
+        if self.message_mode.get():
+            self.terminal.print_to_terminal("⚠️ Режим сообщений активен — iperf TCP недоступен")
+            return
+        target_ip = "10.0.0.2" if not self.network_mode.get() else (self.ip_var.get().strip() or "127.0.0.1")
+        cmd_list = self._ns_or_local_prefix() + ["iperf", "-c", target_ip, "-t", "10"]
+        cmd = " ".join(cmd_list) if self._ns_or_local_prefix() else f"iperf -c {target_ip} -t 10"
+        self.terminal.print_to_terminal(f"🚀 iperf TCP клиент -> {target_ip}")
+        threading.Thread(target=self.terminal.run_command, args=(cmd,), daemon=True).start()
+
+    def run_iperf_udp_client(self):
+        if self.message_mode.get():
+            self.terminal.print_to_terminal("⚠️ Режим сообщений активен — iperf UDP недоступен")
+            return
+        target_ip = "10.0.0.2" if not self.network_mode.get() else (self.ip_var.get().strip() or "127.0.0.1")
+        cmd_list = self._ns_or_local_prefix() + ["iperf", "-c", target_ip, "-u", "-t", "10", "-b", "100M"]
+        cmd = " ".join(cmd_list) if self._ns_or_local_prefix() else f"iperf -c {target_ip} -u -t 10 -b 100M"
+        self.terminal.print_to_terminal(f"🚀 iperf UDP клиент -> {target_ip}")
+        threading.Thread(target=self.terminal.run_command, args=(cmd,), daemon=True).start()
+
+    def run_hping_syn(self):
+        if self.message_mode.get():
+            self.terminal.print_to_terminal("⚠️ Режим сообщений активен — hping3 SYN недоступен")
+            return
+        target_ip = "10.0.0.2" if not self.network_mode.get() else (self.ip_var.get().strip() or "127.0.0.1")
+        cmd_list = self._ns_or_local_prefix() + ["hping3", target_ip, "-S", "-p", "80", "-c", "10"]
+        cmd = " ".join(cmd_list) if self._ns_or_local_prefix() else f"hping3 {target_ip} -S -p 80 -c 10"
+        self.terminal.print_to_terminal(f"📦 hping3 SYN -> {target_ip}:80")
+        threading.Thread(target=self.terminal.run_command, args=(cmd,), daemon=True).start()
+
+    def run_hping_udp(self):
+        if self.message_mode.get():
+            self.terminal.print_to_terminal("⚠️ Режим сообщений активен — hping3 UDP недоступен")
+            return
+        target_ip = "10.0.0.2" if not self.network_mode.get() else (self.ip_var.get().strip() or "127.0.0.1")
+        cmd_list = self._ns_or_local_prefix() + ["hping3", target_ip, "-2", "-p", "5000", "-c", "10"]
+        cmd = " ".join(cmd_list) if self._ns_or_local_prefix() else f"hping3 {target_ip} -2 -p 5000 -c 10"
+        self.terminal.print_to_terminal(f"📦 hping3 UDP -> {target_ip}:5000")
+        threading.Thread(target=self.terminal.run_command, args=(cmd,), daemon=True).start()
 
 def main():
     root = tk.Tk()
