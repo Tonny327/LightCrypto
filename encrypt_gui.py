@@ -14,6 +14,7 @@ import signal
 import pty
 import select
 import fcntl
+import shutil
 
 class EmbeddedTerminal(tk.Frame):
     def __init__(self, parent_widget, parent_gui):
@@ -350,6 +351,9 @@ class EncryptGUI:
         self.port_var = tk.StringVar(value="12345")
         self.message_mode = tk.BooleanVar(value=False)
         self.network_mode = tk.BooleanVar(value=False)  # False = локальный, True = сетевой
+        self.use_embedded_xterm = tk.BooleanVar(value=True)
+        self._xterm_proc = None
+        self._xterm_container = None
         
         self.setup_gui()
         self.check_sudo_access()
@@ -442,6 +446,16 @@ class EncryptGUI:
             command=self.on_message_mode_change
         )
         self.message_check.pack(side="left", padx=(10, 0))
+
+        # Встроенный Xterm (X11)
+        self.xterm_check = tk.Checkbutton(
+            top_row2,
+            text="Встроенный xterm (X11)",
+            variable=self.use_embedded_xterm,
+            font=("Arial", 10),
+            command=self.on_xterm_toggle
+        )
+        self.xterm_check.pack(side="left", padx=(10, 0))
         
         # Разделитель
         separator = ttk.Separator(self.root, orient="horizontal")
@@ -450,6 +464,8 @@ class EncryptGUI:
         # Встроенный терминал
         self.terminal = EmbeddedTerminal(self.root, self)
         self.terminal.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # Включаем xterm по умолчанию (если доступен)
+        self.on_xterm_toggle()
 
         # Панель генерации трафика
         traffic_frame = tk.Frame(self.root)
@@ -542,8 +558,12 @@ class EncryptGUI:
         
         self.start_button.config(text="Остановить задачу", bg="red", fg="white")
         
-        # Запускаем в терминале
-        self.terminal.run_tap_encrypt(cmd)
+        if self.use_embedded_xterm.get() and shutil.which("xterm") and os.environ.get("DISPLAY"):
+            command_str = " ".join(cmd)
+            self._launch_embedded_xterm("tap_encrypt", command_str)
+        else:
+            # Запускаем в терминале
+            self.terminal.run_tap_encrypt(cmd)
         
         # Если включен режим сообщений, показываем подсказку
         if self.message_mode.get():
@@ -556,10 +576,12 @@ class EncryptGUI:
         self.terminal.stop_process()
         # Принудительно сбрасываем состояние кнопки
         self.start_button.config(text="Запустить задачу", bg="lightgreen", fg="black")
+        self._stop_embedded_xterm()
         
     def on_process_ended(self):
         """Обработчик завершения процесса"""
         self.start_button.config(text="Запустить задачу", bg="lightgreen", fg="black")
+        self._stop_embedded_xterm()
         
     def on_mode_change(self):
         """Обработчик изменения режима работы (локальный/сетевой)"""
@@ -589,11 +611,36 @@ class EncryptGUI:
             # Включаем генерацию Ethernet-трафика
             for btn in [self.ping_btn, self.iperf_tcp_btn, self.iperf_udp_btn, self.hping_syn_btn, self.hping_udp_btn]:
                 btn.config(state=tk.NORMAL)
-        
+
+    def on_xterm_toggle(self):
+        if self.use_embedded_xterm.get():
+            if not os.environ.get("DISPLAY"):
+                self.terminal.print_to_terminal("❌ DISPLAY не установлен. X11 недоступен")
+                self.use_embedded_xterm.set(False)
+                return
+            if os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("DISPLAY"):
+                self.terminal.print_to_terminal("❌ Wayland без XWayland — встроенный xterm недоступен")
+                self.use_embedded_xterm.set(False)
+                return
+            if not shutil.which("xterm"):
+                self.terminal.print_to_terminal("❌ xterm не найден. Установите пакет xterm")
+                self.use_embedded_xterm.set(False)
+                return
+            if self._xterm_container is None:
+                self._xterm_container = tk.Frame(self.root, height=480, bg="black")
+            self._xterm_container.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+            self.terminal.print_to_terminal("🪟 Встроенный xterm включён")
+        else:
+            self._stop_embedded_xterm()
+            if self._xterm_container is not None:
+                self._xterm_container.pack_forget()
+                self.terminal.print_to_terminal("🪟 Встроенный xterm выключен")
+
     def on_closing(self):
         """Обработчик закрытия окна"""
         if self.terminal.is_running:
             self.terminal.stop_process()
+        self._stop_embedded_xterm()
         self.root.destroy()
 
     def setup_namespaces(self):
@@ -691,6 +738,38 @@ class EncryptGUI:
         cmd = " ".join(cmd_list) if self._ns_or_local_prefix() else f"hping3 {target_ip} -2 -p 5000 -c 10"
         self.terminal.print_to_terminal(f"📦 hping3 UDP -> {target_ip}:5000")
         threading.Thread(target=self.terminal.run_command, args=(cmd,), daemon=True).start()
+
+    # --- Встроенный xterm ---
+    def _launch_embedded_xterm(self, title, command_str):
+        try:
+            self._stop_embedded_xterm()
+            if self._xterm_container is None:
+                self._xterm_container = tk.Frame(self.root, height=480, bg="black")
+            self._xterm_container.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+            win_id = self._xterm_container.winfo_id()
+            full_cmd = [
+                "xterm",
+                "-into", str(win_id),
+                "-T", title,
+                "-fa", "Monospace",
+                "-fs", "10",
+                "-e", "bash", "-lc",
+                f"{command_str}; echo; read -p 'Нажмите Enter для закрытия...'"
+            ]
+            self._xterm_proc = subprocess.Popen(full_cmd, preexec_fn=os.setsid)
+            self.terminal.print_to_terminal(f"🚀 xterm: {title} запущен")
+        except Exception as e:
+            self.terminal.print_to_terminal(f"❌ Не удалось запустить встроенный xterm: {e}")
+            self.use_embedded_xterm.set(False)
+
+    def _stop_embedded_xterm(self):
+        if self._xterm_proc is not None:
+            try:
+                pgid = os.getpgid(self._xterm_proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+            except Exception:
+                pass
+            self._xterm_proc = None
 
 def main():
     root = tk.Tk()
