@@ -24,6 +24,7 @@ class EmbeddedTerminal(tk.Frame):
         self.process = None
         self.master_fd = None
         self.is_running = False
+        self.enable_input = False  # отключаем ввод в Tk-консоли
         
         self.setup_terminal()
         
@@ -59,25 +60,12 @@ class EmbeddedTerminal(tk.Frame):
         )
         self.terminal_text.pack(fill="both", expand=True)
         
-        # Поле ввода команд
-        input_frame = tk.Frame(self)
-        input_frame.pack(fill="x", pady=(5, 0))
-        
-        tk.Label(input_frame, text="$", bg="white", fg="black", font=("Consolas", 10)).pack(side="left")
-        
-        self.command_entry = tk.Entry(
-            input_frame,
-            bg="white",
-            fg="black",
-            font=("Consolas", 10),
-            insertbackground="black"
-        )
-        self.command_entry.pack(side="left", fill="x", expand=True, padx=(5, 0))
-        self.command_entry.bind("<Return>", self.execute_command)
+        # Поле ввода отключено — используйте xterm для ввода
+        self.command_entry = None
         
         # Приветственное сообщение
-        self.print_to_terminal("🖥️ LightCrypto встроенный терминал")
-        self.print_to_terminal("💡 Введите команду или используйте кнопку 'Запустить задачу'")
+        self.print_to_terminal("🖥️ LightCrypto встроенный терминал (только вывод)")
+        self.print_to_terminal("⌨️ Ввод выполняйте во встроенном xterm сверху")
         self.print_to_terminal("")
         
     def print_to_terminal(self, text, color="black"):
@@ -97,6 +85,8 @@ class EmbeddedTerminal(tk.Frame):
         
     def execute_command(self, event=None):
         """Выполнение команды из поля ввода"""
+        if not self.enable_input or self.command_entry is None:
+            return
         command = self.command_entry.get().strip()
         if not command:
             return
@@ -281,7 +271,13 @@ class DecryptGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("decrypt")
+        # Отключаем масштабирование Tk (HiDPI)
+        try:
+            self.root.tk.call('tk', 'scaling', 1.0)
+        except Exception:
+            pass
         self.root.geometry("800x700")
+        self.root.minsize(800, 700)  # Минимальный размер окна
         self.root.resizable(True, True)
         
         # Переменные для полей ввода
@@ -289,18 +285,28 @@ class DecryptGUI:
         self.port_var = tk.StringVar(value="12345")
         self.message_mode = tk.BooleanVar(value=False)
         self.network_mode = tk.BooleanVar(value=False)  # False = локальный, True = сетевой
-        self.use_embedded_xterm = tk.BooleanVar(value=True)
+        self.use_embedded_xterm = tk.BooleanVar(value=True)  # Всегда включен
         self._xterm_proc = None
         self._xterm_container = None
+        self._task_running = False
         
         self.setup_gui()
         self.check_sudo_access()
         
+        # Принудительно обновляем layout после создания всех элементов
+        self.root.after(100, self._force_layout_update)
+        
     def setup_gui(self):
         """Создание интерфейса"""
+        # Конфигурация сетки корневого окна: 3 строки (верх/центр/низ)
+        self.root.grid_rowconfigure(0, weight=0)
+        self.root.grid_rowconfigure(1, weight=1)
+        self.root.grid_rowconfigure(2, weight=0)
+        self.root.grid_columnconfigure(0, weight=1)
+
         # Верхняя панель с кнопками (2 строки)
         top_frame = tk.Frame(self.root)
-        top_frame.pack(fill="x", padx=10, pady=5)
+        top_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=5)
         top_row1 = tk.Frame(top_frame)
         top_row1.pack(fill="x")
         top_row2 = tk.Frame(top_frame)
@@ -336,6 +342,16 @@ class DecryptGUI:
             bg="#ffecec"
         )
         self.ns_cleanup_btn.pack(side="left", padx=(5, 0))
+
+        # Кнопка создания TAP интерфейсов как в setup_tap_pair.sh (на хосте)
+        self.tap_setup_btn = tk.Button(
+            ns_btn_frame,
+            text="Создать TAP (host)",
+            font=("Arial", 9),
+            command=self.setup_tap_pair,
+            bg="#eef6ff"
+        )
+        self.tap_setup_btn.pack(side="left", padx=(5, 0))
         
         # Переключатель режимов
         mode_frame = tk.Frame(top_row1)
@@ -381,39 +397,35 @@ class DecryptGUI:
         )
         self.message_check.pack(side="left", padx=(10, 0))
 
-        # Встроенный Xterm (X11)
-        self.xterm_check = tk.Checkbutton(
-            top_row2,
-            text="Встроенный xterm (X11)",
-            variable=self.use_embedded_xterm,
-            font=("Arial", 10),
-            command=self.on_xterm_toggle
-        )
-        self.xterm_check.pack(side="left", padx=(10, 0))
         
-        # Разделитель
-        separator = ttk.Separator(self.root, orient="horizontal")
-        separator.pack(fill="x", padx=10, pady=5)
-        
-        # Встроенный терминал
-        self.terminal = EmbeddedTerminal(self.root, self)
-        self.terminal.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        # Общая панель консоли (xterm + Tk консоль)
+        self.console_pane = ttk.Panedwindow(self.root, orient="vertical")
+        self.console_pane.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
+
+        # Встроенный терминал (Tk)
+        self.terminal = EmbeddedTerminal(self.console_pane, self)
+        # Добавляем как нижнюю панель по умолчанию
+        self.console_pane.add(self.terminal, weight=40)
         # Включаем xterm по умолчанию (если доступен)
         self.on_xterm_toggle()
 
-        # Панель сервисов (iperf/tcpdump)
-        svc_frame = tk.Frame(self.root)
-        svc_frame.pack(fill="x", padx=10, pady=(0, 10))
-
-        tk.Label(svc_frame, text="Сервисы:", font=("Arial", 10, "bold")).pack(side="left", padx=(0, 10))
-
-        self.iperf_tcp_server_btn = tk.Button(svc_frame, text="iperf TCP сервер", font=("Arial", 9), command=self.run_iperf_tcp_server)
+        # Панель сервисов (iperf/tcpdump) внизу окна
+        self.svc_frame = tk.Frame(self.root)
+        self.svc_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        # Автовысота по содержимому кнопок
+        self._xterm_target_height = 420    # px - комфортная высота xterm
+        self._tk_min_height = 110          # px - минимальная высота Tk-консоли
+        self.root.bind("<Configure>", self._on_resize)
+        
+        tk.Label(self.svc_frame, text="Сервисы:", font=("Arial", 10, "bold")).pack(side="left", padx=(0, 10))
+        
+        self.iperf_tcp_server_btn = tk.Button(self.svc_frame, text="iperf TCP сервер", font=("Arial", 9), command=self.run_iperf_tcp_server)
         self.iperf_tcp_server_btn.pack(side="left")
-
-        self.iperf_udp_server_btn = tk.Button(svc_frame, text="iperf UDP сервер", font=("Arial", 9), command=self.run_iperf_udp_server)
+        
+        self.iperf_udp_server_btn = tk.Button(self.svc_frame, text="iperf UDP сервер", font=("Arial", 9), command=self.run_iperf_udp_server)
         self.iperf_udp_server_btn.pack(side="left", padx=(5, 0))
-
-        self.tcpdump_tap_btn = tk.Button(svc_frame, text="tcpdump tap", font=("Arial", 9), command=self.run_tcpdump_tap)
+        
+        self.tcpdump_tap_btn = tk.Button(self.svc_frame, text="tcpdump tap", font=("Arial", 9), command=self.run_tcpdump_tap)
         self.tcpdump_tap_btn.pack(side="left", padx=(5, 0))
         
     def check_sudo_access(self):
@@ -477,7 +489,8 @@ class DecryptGUI:
         
     def toggle_process(self):
         """Запуск или остановка процесса"""
-        if not self.terminal.is_running:
+        is_running = self._task_running or (self._xterm_proc is not None) or self.terminal.is_running
+        if not is_running:
             self.start_process()
         else:
             self.stop_process()
@@ -492,7 +505,12 @@ class DecryptGUI:
         cmd = self.build_command()
         
         self.start_button.config(text="Остановить задачу", bg="red", fg="white")
-        
+        self._task_running = True
+
+        # В сетевом режиме и msg-режиме блокируем L2 кадры
+        if self.network_mode.get() and self.message_mode.get():
+            self._suppress_ethernet_frames(True)
+            
         if self.use_embedded_xterm.get() and shutil.which("xterm") and os.environ.get("DISPLAY"):
             # Запуск во встроенном xterm
             command_str = " ".join(cmd)
@@ -507,12 +525,16 @@ class DecryptGUI:
         self._stop_embedded_xterm()
         # Принудительно сбрасываем состояние кнопки
         self.start_button.config(text="Запустить задачу", bg="lightblue", fg="black")
+        self._task_running = False
+        # Всегда пробуем снять блокировку
+        self._suppress_ethernet_frames(False)
         
     def on_process_ended(self):
         """Обработчик завершения процесса"""
         self.start_button.config(text="Запустить задачу", bg="lightblue", fg="black")
         # Закрываем встроенный xterm, если был запущен
         self._stop_embedded_xterm()
+        self._task_running = False
 
     def on_mode_change(self):
         """Обработчик изменения режима работы (локальный/сетевой)"""
@@ -527,42 +549,50 @@ class DecryptGUI:
 
     def on_message_mode_change(self):
         """Обработчик изменения режима сообщений"""
+        self.terminal.update_command_prompt()
+ 
         if self.message_mode.get():
             self.terminal.print_to_terminal("💬 Режим сообщений включен")
             # Отключаем сервисы Ethernet-трафика
             for btn in [self.iperf_tcp_server_btn, self.iperf_udp_server_btn, self.tcpdump_tap_btn]:
                 btn.config(state=tk.DISABLED)
             self.terminal.print_to_terminal("⛔ iperf/tcpdump отключены в режиме сообщений")
+            if self.network_mode.get():
+                self._suppress_ethernet_frames(True)
         else:
             self.terminal.print_to_terminal("🔧 Режим сообщений отключен")
             for btn in [self.iperf_tcp_server_btn, self.iperf_udp_server_btn, self.tcpdump_tap_btn]:
                 btn.config(state=tk.NORMAL)
+            self._suppress_ethernet_frames(False)
 
     def on_xterm_toggle(self):
-        """Показать/скрыть контейнер для встроенного xterm"""
-        if self.use_embedded_xterm.get():
-            if not os.environ.get("DISPLAY"):
-                self.terminal.print_to_terminal("❌ DISPLAY не установлен. X11 недоступен")
-                self.use_embedded_xterm.set(False)
-                return
-            if os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("DISPLAY"):
-                self.terminal.print_to_terminal("❌ Wayland без XWayland — встроенный xterm недоступен")
-                self.use_embedded_xterm.set(False)
-                return
-            if not shutil.which("xterm"):
-                self.terminal.print_to_terminal("❌ xterm не найден. Установите пакет xterm")
-                self.use_embedded_xterm.set(False)
-                return
-            if self._xterm_container is None:
-                self._xterm_container = tk.Frame(self.root, height=480, bg="black")
-            # Вставляем контейнер над встроенным лог-терминалом
-            self._xterm_container.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-            self.terminal.print_to_terminal("🪟 Встроенный xterm включён")
-        else:
-            self._stop_embedded_xterm()
-            if self._xterm_container is not None:
-                self._xterm_container.pack_forget()
-                self.terminal.print_to_terminal("🪟 Встроенный xterm выключен")
+        """Показать/скрыть контейнер для встроенного xterm (всегда включен)"""
+        # xterm всегда включен, проверяем только доступность
+        if not os.environ.get("DISPLAY"):
+            self.terminal.print_to_terminal("❌ DISPLAY не установлен. X11 недоступен")
+            return
+        if os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("DISPLAY"):
+            self.terminal.print_to_terminal("❌ Wayland без XWayland — встроенный xterm недоступен")
+            return
+        if not shutil.which("xterm"):
+            self.terminal.print_to_terminal("❌ xterm не найден. Установите пакет xterm")
+            return
+        if self._xterm_container is None:
+            self._xterm_container = tk.Frame(self.console_pane, height=480, bg="black")
+            # Если контейнер ещё не добавлен в панель — добавим сверху
+            try:
+                self.console_pane.forget(self._xterm_container)
+            except Exception:
+                pass
+            self.console_pane.insert(0, self._xterm_container, weight=60)
+            try:
+                self.console_pane.paneconfig(self.terminal, minsize=80)
+            except Exception:
+                pass
+            # Установим разделитель ~60/40 после прорисовки
+            self.root.after(50, self._set_console_ratio)
+        self.terminal.print_to_terminal("🪟 Встроенный xterm включён")
+        # xterm всегда включен, убираем else блок
 
     # --- Сервисы для тестирования (в соответствии с README) ---
     def _find_terminal_emulator(self):
@@ -626,6 +656,8 @@ class DecryptGUI:
         if self.terminal.is_running:
             self.terminal.stop_process()
         self._stop_embedded_xterm()
+        # Снять блокировки при закрытии
+        self._suppress_ethernet_frames(False)
         self.root.destroy()
 
     # --- Встроенный xterm ---
@@ -633,8 +665,18 @@ class DecryptGUI:
         try:
             self._stop_embedded_xterm()
             if self._xterm_container is None:
-                self._xterm_container = tk.Frame(self.root, height=480, bg="black")
-                self._xterm_container.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+                self._xterm_container = tk.Frame(self.console_pane, height=480, bg="black")
+                # вставим наверх, если не вставлен
+                try:
+                    self.console_pane.forget(self._xterm_container)
+                except Exception:
+                    pass
+                self.console_pane.insert(0, self._xterm_container, weight=60)
+                try:
+                    self.console_pane.paneconfig(self.terminal, minsize=80)
+                except Exception:
+                    pass
+                self.root.after(50, self._set_console_ratio)
             win_id = self._xterm_container.winfo_id()
             full_cmd = [
                 "xterm",
@@ -695,11 +737,96 @@ class DecryptGUI:
         cmds = [
             "sudo ip netns delete ns1 2>/dev/null",
             "sudo ip netns delete ns2 2>/dev/null",
-            "sudo killall tap_encrypt tap_decrypt tcpdump 2>/dev/null || true"
+            "sudo killall tap_encrypt tap_decrypt tcpdump 2>/dev/null || true",
+            # Очистим все TAP-интерфейсы на хосте
+            "sudo bash -lc 'ip tuntap list 2>/dev/null | awk -F: \''{print $1}\'' | while read -r dev; do [ -n \"$dev\" ] && (ip link delete \"$dev\" 2>/dev/null || ip tuntap del dev \"$dev\" mode tap 2>/dev/null || true); done'",
+            "sudo bash -lc 'ip -o link | awk -F: \''{print $2}\'' | sed \''s/@.*//\'' | tr -d \'' \'' | grep -E \''^tap[0-9A-Za-z._-]*$\'' | while read -r dev; do ip link delete \"$dev\" 2>/dev/null || true; done'"
         ]
         full_cmd = " && ".join(cmds)
         self.terminal.print_to_terminal("🧹 Очищаем ресурсы...")
         threading.Thread(target=self.terminal.run_command, args=(full_cmd,), daemon=True).start()
+
+    def setup_tap_pair(self):
+        """Выполнить setup_tap_pair.sh на хосте и показать вывод в нижнем терминале"""
+        script_path = "./setup_tap_pair.sh"
+        if not os.path.exists(script_path):
+            self.terminal.print_to_terminal("❌ Файл setup_tap_pair.sh не найден в корне проекта")
+            return
+        cmd = f"bash {script_path}"
+        self.terminal.print_to_terminal("🔧 Запуск setup_tap_pair.sh (создание TAP интерфейсов на хосте)...")
+        threading.Thread(target=self.terminal.run_command, args=(cmd,), daemon=True).start()
+
+    def _set_console_ratio(self):
+        # Попробуем установить позицию разделителя на 60% высоты
+        try:
+            total_h = self.console_pane.winfo_height()
+            if total_h <= 0:
+                self.root.after(50, self._set_console_ratio)
+                return
+            # xterm фиксированной высоты с гарантией минимума для Tk-консоли
+            y = max(min(self._xterm_target_height, total_h - self._tk_min_height), 0)
+            self.console_pane.sashpos(0, y)
+        except Exception:
+            pass
+
+    def _set_console_ratio_no_xterm(self):
+        try:
+            total_h = self.console_pane.winfo_height()
+            if total_h <= 0:
+                self.root.after(50, self._set_console_ratio_no_xterm)
+                return
+            y = total_h - 1
+            self.console_pane.sashpos(0, y)
+        except Exception:
+            pass
+
+    def _on_resize(self, event):
+        try:
+            # Обновляем размеры только при изменении высоты окна
+            if self._last_resize_h == event.height:
+                return
+            self._last_resize_h = event.height
+            
+            # Нижняя панель авто-высоты — просто обновим layout
+            if hasattr(self, 'svc_frame') and self.svc_frame.winfo_exists():
+                self.svc_frame.update_idletasks()
+        except Exception:
+            pass
+
+    def _force_layout_update(self):
+        """Принудительное обновление layout для корректного отображения кнопок"""
+        try:
+            if hasattr(self, 'svc_frame') and self.svc_frame.winfo_exists():
+                self.svc_frame.update_idletasks()
+            self.root.update_idletasks()
+        except Exception:
+            pass
+
+    # --- Блокировка L2 кадров в сетевом msg-режиме (без правок C++) ---
+    def _suppress_ethernet_frames(self, enable: bool):
+        """Включить/выключить блокировку Ethernet-кадров на хосте.
+        Используется только в сетевом режиме при включенном message_mode.
+        """
+        cmds = []
+        if enable:
+            self.terminal.print_to_terminal("⛔ Блокируем Ethernet-кадры (tap*) для msg-режима в сетевом режиме...")
+            cmds = [
+                "sudo ip link set tap0 down 2>/dev/null || true",
+                "sudo ip link set tap1 down 2>/dev/null || true",
+                "sudo ebtables -I OUTPUT -o tap+ -j DROP 2>/dev/null || true",
+                "sudo ebtables -I INPUT -i tap+ -j DROP 2>/dev/null || true",
+            ]
+        else:
+            self.terminal.print_to_terminal("✅ Снимаем блокировку Ethernet-кадров (tap*)...")
+            cmds = [
+                "sudo ebtables -D OUTPUT -o tap+ -j DROP 2>/dev/null || true",
+                "sudo ebtables -D INPUT -i tap+ -j DROP 2>/dev/null || true",
+                "sudo ip link set tap0 up 2>/dev/null || true",
+                "sudo ip link set tap1 up 2>/dev/null || true",
+            ]
+        if cmds:
+            full_cmd = " && ".join(cmds)
+            threading.Thread(target=self.terminal.run_command, args=(full_cmd,), daemon=True).start()
 
 def main():
     root = tk.Tk()
