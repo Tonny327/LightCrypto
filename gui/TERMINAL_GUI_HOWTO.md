@@ -9,8 +9,8 @@
 bash setup_sudo.sh
 
 # 2. Запуск GUI приложений
-python3 decrypt_gui.py &    # В фоне
-python3 encrypt_gui.py      # Основное окно
+python3 gui/decrypt_gui.py &    # В фоне
+python3 gui/encrypt_gui.py      # Основное окно
 ```
 
 ## 🖥️ Интерфейс
@@ -47,7 +47,7 @@ python3 encrypt_gui.py      # Основное окно
 
 ## 📺 Что вы увидите
 
-### При запуске encrypt_gui.py:
+### При запуске gui/encrypt_gui.py:
 ```
 🔍 Проверка sudo доступа...
 ✅ Sudo доступ настроен корректно
@@ -106,7 +106,7 @@ python3 encrypt_gui.py      # Основное окно
 ### GUI не запускается:
 ```bash
 python3 -c "import tkinter; print('tkinter OK')"
-python3 encrypt_gui.py  # Посмотрите ошибки
+python3 gui/encrypt_gui.py  # Посмотрите ошибки
 ```
 
 ## 🎯 Готово!
