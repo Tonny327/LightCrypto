@@ -464,12 +464,15 @@ class DecryptGUI:
             
     def build_command(self):
         """Построение команды для запуска tap_decrypt"""
+        # Абсолютный путь к исполняемому файлу на основе расположения этого скрипта
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        build_path = os.path.join(os.path.dirname(script_dir), "build", "tap_decrypt")
         if self.network_mode.get():
             # Сетевой режим - запуск без неймспейса
-            cmd = ["sudo", "./build/tap_decrypt"]
+            cmd = ["sudo", build_path]
         else:
             # Локальный режим - запуск в неймспейсе ns2
-            cmd = ["sudo", "ip", "netns", "exec", "ns2", "./build/tap_decrypt"]
+            cmd = ["sudo", "ip", "netns", "exec", "ns2", build_path]
 
         if self.message_mode.get():
             cmd.append("--msg")
@@ -497,9 +500,11 @@ class DecryptGUI:
             
     def start_process(self):
         """Запуск процесса tap_decrypt"""
-        if not os.path.exists("./build/tap_decrypt"):
-            self.terminal.print_to_terminal("❌ Файл ./build/tap_decrypt не найден")
-            self.terminal.print_to_terminal("💡 Выполните сборку: mkdir -p build && cd build && cmake .. && make")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        bin_path = os.path.join(os.path.dirname(script_dir), "build", "tap_decrypt")
+        if not os.path.exists(bin_path):
+            self.terminal.print_to_terminal(f"❌ Файл {bin_path} не найден")
+            self.terminal.print_to_terminal("💡 Выполните сборку: bash ../rebuild.sh")
             return
             
         cmd = self.build_command()
@@ -540,11 +545,11 @@ class DecryptGUI:
         """Обработчик изменения режима работы (локальный/сетевой)"""
         if self.network_mode.get():
             self.terminal.print_to_terminal("🌐 Переключен сетевой режим")
-            self.terminal.print_to_terminal("📡 Команда: sudo ./build/tap_decrypt [IP|PORT]")
-            self.terminal.print_to_terminal("💡 Пример: sudo ./build/tap_decrypt 0.0.0.0 5555 или sudo ./build/tap_decrypt 5555")
+            self.terminal.print_to_terminal("📡 Команда: sudo ../build/tap_decrypt [IP|PORT]")
+            self.terminal.print_to_terminal("💡 Пример: sudo ../build/tap_decrypt 0.0.0.0 5555 или sudo ../build/tap_decrypt 5555")
         else:
             self.terminal.print_to_terminal("🏠 Переключен локальный режим")
-            self.terminal.print_to_terminal("📡 Команда: sudo ip netns exec ns2 ./build/tap_decrypt IP PORT")
+            self.terminal.print_to_terminal("📡 Команда: sudo ip netns exec ns2 ../build/tap_decrypt IP PORT")
             self.terminal.print_to_terminal("💡 Для тестирования на одном компьютере с неймспейсами")
 
     def on_message_mode_change(self):
@@ -748,7 +753,7 @@ class DecryptGUI:
 
     def setup_tap_pair(self):
         """Выполнить setup_tap_pair.sh на хосте и показать вывод в нижнем терминале"""
-        script_path = "./setup_tap_pair.sh"
+        script_path = "../setup_tap_pair.sh"
         if not os.path.exists(script_path):
             self.terminal.print_to_terminal("❌ Файл setup_tap_pair.sh не найден в корне проекта")
             return

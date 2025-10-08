@@ -543,12 +543,15 @@ class EncryptGUI:
             
     def build_command(self):
         """Построение команды для запуска tap_encrypt"""
+        # Абсолютный путь к исполняемому файлу на основе расположения этого скрипта
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        build_path = os.path.join(os.path.dirname(script_dir), "build", "tap_encrypt")
         if self.network_mode.get():
             # Сетевой режим - запуск без неймспейса
-            cmd = ["sudo", "./build/tap_encrypt"]
+            cmd = ["sudo", build_path]
         else:
             # Локальный режим - запуск в неймспейсе ns1
-            cmd = ["sudo", "ip", "netns", "exec", "ns1", "./build/tap_encrypt"]
+            cmd = ["sudo", "ip", "netns", "exec", "ns1", build_path]
         
         if self.message_mode.get():
             cmd.append("--msg")
@@ -569,9 +572,11 @@ class EncryptGUI:
             
     def start_process(self):
         """Запуск процесса tap_encrypt"""
-        if not os.path.exists("./build/tap_encrypt"):
-            self.terminal.print_to_terminal("❌ Файл ./build/tap_encrypt не найден")
-            self.terminal.print_to_terminal("💡 Выполните сборку: mkdir -p build && cd build && cmake .. && make")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        bin_path = os.path.join(os.path.dirname(script_dir), "build", "tap_encrypt")
+        if not os.path.exists(bin_path):
+            self.terminal.print_to_terminal(f"❌ Файл {bin_path} не найден")
+            self.terminal.print_to_terminal("💡 Выполните сборку: bash ../rebuild.sh")
             return
             
         cmd = self.build_command()
@@ -616,11 +621,11 @@ class EncryptGUI:
         """Обработчик изменения режима работы (локальный/сетевой)"""
         if self.network_mode.get():
             self.terminal.print_to_terminal("🌐 Переключен сетевой режим")
-            self.terminal.print_to_terminal("📡 Команда: sudo ./build/tap_encrypt IP PORT")
+            self.terminal.print_to_terminal("📡 Команда: sudo ../build/tap_encrypt IP PORT")
             self.terminal.print_to_terminal("💡 Для работы на двух устройствах")
         else:
             self.terminal.print_to_terminal("🏠 Переключен локальный режим")
-            self.terminal.print_to_terminal("📡 Команда: sudo ip netns exec ns1 ./build/tap_encrypt IP PORT")
+            self.terminal.print_to_terminal("📡 Команда: sudo ip netns exec ns1 ../build/tap_encrypt IP PORT")
             self.terminal.print_to_terminal("💡 Для тестирования на одном компьютере с неймспейсами")
             
     def on_message_mode_change(self):
@@ -891,7 +896,7 @@ class EncryptGUI:
 
     def setup_tap_pair(self):
         """Выполнить setup_tap_pair.sh на хосте и показать вывод в нижнем терминале"""
-        script_path = "./setup_tap_pair.sh"
+        script_path = "../setup_tap_pair.sh"
         if not os.path.exists(script_path):
             self.terminal.print_to_terminal("❌ Файл setup_tap_pair.sh не найден в корне проекта")
             return

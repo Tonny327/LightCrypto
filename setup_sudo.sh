@@ -6,13 +6,20 @@ echo "🔐 Настройка sudo доступа для LightCrypto..."
 # Получаем имя текущего пользователя
 USERNAME=$(whoami)
 
-# Получаем полный путь к текущей директории
-CURRENT_DIR=$(pwd)
+# Получаем полный путь к корневой директории проекта
+# Если скрипт запущен из папки gui, поднимаемся на уровень выше
+if [[ $(basename "$(pwd)") == "gui" ]]; then
+    CURRENT_DIR=$(dirname "$(pwd)")
+else
+    CURRENT_DIR=$(pwd)
+fi
 
 # Создаем правило sudoers для LightCrypto
 SUDOERS_RULE="# LightCrypto GUI - доступ без пароля
 $USERNAME ALL=(ALL) NOPASSWD: /usr/sbin/ip netns exec ns1 $CURRENT_DIR/build/tap_encrypt*
 $USERNAME ALL=(ALL) NOPASSWD: /usr/sbin/ip netns exec ns2 $CURRENT_DIR/build/tap_decrypt*
+$USERNAME ALL=(ALL) NOPASSWD: $CURRENT_DIR/build/tap_encrypt*
+$USERNAME ALL=(ALL) NOPASSWD: $CURRENT_DIR/build/tap_decrypt*
 $USERNAME ALL=(ALL) NOPASSWD: /usr/sbin/ip netns exec *
 $USERNAME ALL=(ALL) NOPASSWD: /usr/sbin/ip netns list
 $USERNAME ALL=(ALL) NOPASSWD: /usr/sbin/ip netns add *
@@ -22,7 +29,9 @@ $USERNAME ALL=(ALL) NOPASSWD: /usr/sbin/ip addr *
 $USERNAME ALL=(ALL) NOPASSWD: /usr/sbin/ip route *
 $USERNAME ALL=(ALL) NOPASSWD: /usr/sbin/ip tuntap *
 $USERNAME ALL=(ALL) NOPASSWD: /usr/bin/killall tap_encrypt
-$USERNAME ALL=(ALL) NOPASSWD: /usr/bin/killall tap_decrypt"
+$USERNAME ALL=(ALL) NOPASSWD: /usr/bin/killall tap_decrypt
+$USERNAME ALL=(ALL) NOPASSWD: /usr/bin/killall tcpdump
+$USERNAME ALL=(ALL) NOPASSWD: /bin/bash -lc *"
 
 # Создаем временный файл
 TEMP_FILE="/tmp/lightcrypto_sudoers"
@@ -30,8 +39,10 @@ echo "$SUDOERS_RULE" > "$TEMP_FILE"
 
 echo "📋 Правила sudo для пользователя $USERNAME:"
 echo "   - sudo ip netns exec ns1/ns2 $CURRENT_DIR/build/tap_encrypt/tap_decrypt"
+echo "   - sudo $CURRENT_DIR/build/tap_encrypt/tap_decrypt (прямой запуск)"
 echo "   - sudo ip netns (все операции с неймспейсами)"
 echo "   - sudo killall tap_encrypt/tap_decrypt"
+echo "📁 Корневая директория проекта: $CURRENT_DIR"
 echo ""
 
 # Проверяем синтаксис
@@ -60,5 +71,8 @@ echo ""
 echo "🎯 Настройка завершена! Теперь можно запускать GUI без ввода пароля."
 echo ""
 echo "🚀 Для запуска GUI выполните:"
+echo "   cd $CURRENT_DIR"
+echo "   bash rebuild.sh  # если нужно собрать проект"
+echo "   cd gui"
 echo "   python3 encrypt_gui.py &"
 echo "   python3 decrypt_gui.py"
