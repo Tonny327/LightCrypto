@@ -1,5 +1,4 @@
 #include <iostream>
-#include <fstream>
 #include <vector>
 #include <cstring>
 #include <fcntl.h>
@@ -12,9 +11,7 @@
 #include <sodium.h>
 #include <arpa/inet.h> // для inet_pton
 #include <thread>
-#include <chrono>
-#include <sstream>
-#include <iomanip>
+#include "digital_codec.h"
 
 constexpr size_t MAX_PACKET_SIZE = 2000;
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
@@ -82,14 +79,23 @@ void send_frames(int tap_fd, int sock, const sockaddr_in &dest_addr, const std::
 
 int main(int argc, char *argv[])
 {
-
     // --msg: если true, тогда мы интерпретируем расшифрованные данные как строку
     bool message_mode = false;
-    if (argc >= 2 && std::string(argv[1]) == "--msg")
-    {
-        message_mode = true;
-        argv++;
-        argc--;
+    bool use_codec = false;
+    std::string codec_csv;
+    digitalcodec::CodecParams codec_params;
+
+    std::vector<std::string> positionals;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--msg") { message_mode = true; continue; }
+        if (arg == "--codec" && i + 1 < argc) { use_codec = true; codec_csv = argv[++i]; continue; }
+        if (arg == "--M" && i + 1 < argc) { codec_params.bitsM = std::stoi(argv[++i]); continue; }
+        if (arg == "--Q" && i + 1 < argc) { codec_params.bitsQ = std::stoi(argv[++i]); continue; }
+        if (arg == "--fun" && i + 1 < argc) { codec_params.funType = std::stoi(argv[++i]); continue; }
+        if (arg == "--h1" && i + 1 < argc) { codec_params.h1 = std::stoi(argv[++i]); continue; }
+        if (arg == "--h2" && i + 1 < argc) { codec_params.h2 = std::stoi(argv[++i]); continue; }
+        positionals.push_back(arg);
     }
 
     if (sodium_init() < 0)
@@ -102,15 +108,8 @@ int main(int argc, char *argv[])
     const char *ip_str = "0.0.0.0"; // слушаем все интерфейсы по умолчанию
     int port = 12345;
 
-    if (argc == 2)
-    {
-        port = std::stoi(argv[1]);
-    }
-    else if (argc >= 3)
-    {
-        ip_str = argv[1];
-        port = std::stoi(argv[2]);
-    }
+    if (positionals.size() == 1) { port = std::stoi(positionals[0]); }
+    else if (positionals.size() >= 2) { ip_str = positionals[0].c_str(); port = std::stoi(positionals[1]); }
 
     std::cout << "🌐 Ожидаем пакеты на IP: " << ip_str << ", порт: " << port << "\n";
 
@@ -141,51 +140,84 @@ int main(int argc, char *argv[])
     }
     // std::cout << "✅ bind() выполнен успешно\n";
 
-    // === [Автоматический обмен ключами через UDP] ===
-    unsigned char my_public_key[crypto_kx_PUBLICKEYBYTES];
-    unsigned char my_private_key[crypto_kx_SECRETKEYBYTES];
-    crypto_kx_keypair(my_public_key, my_private_key);
+    // Объявляем ключи для всех режимов
+    std::vector<unsigned char> rx_key(KEY_SIZE);
+    std::vector<unsigned char> tx_key(KEY_SIZE);
+    std::thread send_thread;
 
-    // 1. Принимаем публичный ключ отправителя
-    unsigned char sender_public_key[crypto_kx_PUBLICKEYBYTES];
-    sockaddr_in sender_addr{};
-    socklen_t sender_len = sizeof(sender_addr);
-
-    ssize_t received = recvfrom(sock, sender_public_key, crypto_kx_PUBLICKEYBYTES, 0,
-                                (sockaddr *)&sender_addr, &sender_len);
-    if (received != crypto_kx_PUBLICKEYBYTES)
+    if (use_codec)
     {
-        std::cerr << "❌ Ошибка при получении публичного ключа отправителя\n";
-        return 1;
+        // РЕЖИМ КОДЕКА: обмен ключами не нужен, только Matlab-шифрование
+        std::cout << "🎛️  Режим цифрового кодека — обмен ключами не требуется\n";
     }
-    std::cout << "📥 Публичный ключ отправителя получен\n";
-
-    // 2. Отправляем свой публичный ключ обратно
-    sendto(sock, my_public_key, crypto_kx_PUBLICKEYBYTES, 0,
-           (sockaddr *)&sender_addr, sender_len);
-    std::cout << "📤 Отправлен свой публичный ключ отправителю\n";
-
-    // 3. Вычисляем общий ключ (rx_key)
-    std::vector<unsigned char> key(KEY_SIZE);
-    if (crypto_kx_server_session_keys(
-            key.data(), nullptr,
-            my_public_key, my_private_key,
-            sender_public_key) != 0)
+    else
     {
-        std::cerr << "❌ Ошибка при расчёте общего ключа (server)\n";
-        return 1;
+        // СТАРЫЙ РЕЖИМ: обмен ключами libsodium
+        // === [Автоматический обмен ключами через UDP] ===
+        unsigned char my_public_key[crypto_kx_PUBLICKEYBYTES];
+        unsigned char my_private_key[crypto_kx_SECRETKEYBYTES];
+        crypto_kx_keypair(my_public_key, my_private_key);
+
+        // 1. Принимаем публичный ключ отправителя
+        unsigned char sender_public_key[crypto_kx_PUBLICKEYBYTES];
+        sockaddr_in sender_addr{};
+        socklen_t sender_len = sizeof(sender_addr);
+
+        ssize_t received = recvfrom(sock, sender_public_key, crypto_kx_PUBLICKEYBYTES, 0,
+                                    (sockaddr *)&sender_addr, &sender_len);
+        if (received != crypto_kx_PUBLICKEYBYTES)
+        {
+            std::cerr << "❌ Ошибка при получении публичного ключа отправителя\n";
+            return 1;
+        }
+        std::cout << "📥 Публичный ключ отправителя получен\n";
+
+        // 2. Отправляем свой публичный ключ обратно
+        sendto(sock, my_public_key, crypto_kx_PUBLICKEYBYTES, 0,
+               (sockaddr *)&sender_addr, sender_len);
+        std::cout << "📤 Отправлен свой публичный ключ отправителю\n";
+
+        // 3. Вычисляем ключи (rx/tx)
+        if (crypto_kx_server_session_keys(
+                rx_key.data(), tx_key.data(),
+                my_public_key, my_private_key,
+                sender_public_key) != 0)
+        {
+            std::cerr << "❌ Ошибка при расчёте общего ключа (server)\n";
+            return 1;
+        }
+
+        // Создаём второй сокет для отправки
+        int send_sock = socket(AF_INET, SOCK_DGRAM, 0);
+        if (send_sock < 0)
+        {
+            perror("send socket");
+            return 1;
+        }
+
+        // Запускаем отправку кадров в отдельном потоке
+        send_thread = std::thread(send_frames, tap_fd, send_sock, sender_addr, std::ref(tx_key));
     }
 
-    // Создаём второй сокет для отправки
-    int send_sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (send_sock < 0)
+    // Initialize optional codec
+    digitalcodec::DigitalCodec codec;
+    if (use_codec && message_mode)
     {
-        perror("send socket");
-        return 1;
+        try {
+            codec.configure(codec_params);
+            if (codec_csv.empty()) {
+                std::cerr << "❌ Не указан путь к CSV для --codec. Укажите файл через --codec <path>.\n";
+                return 1;
+            }
+            codec.loadCoefficientsCSV(codec_csv);
+            codec.reset();
+            std::cout << "🎛️  Цифровой кодек включён (M=" << codec_params.bitsM
+                      << ", Q=" << codec_params.bitsQ << ", fun=" << codec_params.funType << ")\n";
+        } catch (const std::exception &e) {
+            std::cerr << "❌ Ошибка инициализации кодека: " << e.what() << "\n";
+            return 1;
+        }
     }
-
-    // Запускаем отправку кадров в отдельном потоке
-    std::thread send_thread(send_frames, tap_fd, send_sock, sender_addr, std::ref(key));
 
     // Основной цикл приёма
     while (true)
@@ -196,78 +228,89 @@ int main(int argc, char *argv[])
 
         // Принимаем UDP-пакет
         ssize_t nrecv = recvfrom(sock, buffer, sizeof(buffer), 0, (sockaddr *)&sender_addr, &sender_len);
-        if (nrecv <= NONCE_SIZE)
+        if (nrecv <= 0)
             continue;
 
-        // Разделяем nonce и ciphertext
-        std::vector<unsigned char> nonce(buffer, buffer + NONCE_SIZE);
-        std::vector<unsigned char> ciphertext(buffer + NONCE_SIZE, buffer + nrecv);
-
-        // Расшифровываем
-        std::vector<unsigned char> decrypted(ciphertext.size());
-        unsigned long long decrypted_len = 0;
-
-        int result = crypto_aead_chacha20poly1305_ietf_decrypt(
-            decrypted.data(), &decrypted_len,
-            nullptr,
-            ciphertext.data(), ciphertext.size(),
-            nullptr, 0,
-            nonce.data(), key.data());
-
-        if (result != 0)
+        if (use_codec && message_mode)
         {
-            std::cerr << "❌ Ошибка расшифровки!\n";
-            continue;
-        }
-
-        // Проверяем, что длина хотя бы 32 байта (под хеш)
-        if (decrypted_len < HASH_SIZE)
-        {
-            std::cerr << "❌ Слишком маленький расшифрованный буфер!\n";
-            continue;
-        }
-
-        // Первые 32 байта — это хеш
-        unsigned char received_hash[HASH_SIZE];
-        std::memcpy(received_hash, decrypted.data(), HASH_SIZE);
-
-        // Остальная часть – это сообщение
-        size_t msg_len = decrypted_len - HASH_SIZE;
-
-        // Считаем свой хеш
-        unsigned char actual_hash[HASH_SIZE];
-        crypto_hash_sha256(actual_hash,
-                           decrypted.data() + HASH_SIZE, // данные начинаются через 32 байта
-                           msg_len);
-
-        // Сравниваем
-        if (std::memcmp(received_hash, actual_hash, HASH_SIZE) != 0)
-        {
-            std::cerr << "❌ Хеш не совпадает — данные повреждены!\n";
-            continue;
-        }
-
-        if (message_mode)
-        {
-            // Теперь выводим сообщение:
-            std::string received_msg(
-                reinterpret_cast<char *>(decrypted.data() + HASH_SIZE),
-                msg_len);
-            std::cout << "📩 Получено сообщение: "
-                      << msg_len << " байт): "
-                      << received_msg << "\n";
+            // РЕЖИМ КОДЕКА: принимаем полнофреймовое сообщение и восстанавливаем исходный текст
+            std::vector<uint8_t> framed(buffer, buffer + nrecv);
+            std::vector<uint8_t> decoded_bytes = codec.decodeMessage(framed, 0 /*len из кадра*/);
+            std::string received_msg(decoded_bytes.begin(), decoded_bytes.end());
+            std::cout << "📩 Получено сообщение (" << received_msg.size() << " байт): \"" << received_msg << "\"\n";
         }
         else
         {
-            size_t data_len = decrypted_len - HASH_SIZE;
-            std::vector<unsigned char> data_buf(data_len);
-            std::memcpy(data_buf.data(), decrypted.data() + HASH_SIZE, data_len);
+            // СТАРЫЙ РЕЖИМ: libsodium AEAD расшифровка
+            if (nrecv <= NONCE_SIZE)
+                continue;
 
-            // Пишем расшифрованный (и проверенный) кадр в tap1
-            write(tap_fd, data_buf.data(), data_len);
+            // Разделяем nonce и ciphertext
+            std::vector<unsigned char> nonce(buffer, buffer + NONCE_SIZE);
+            std::vector<unsigned char> ciphertext(buffer + NONCE_SIZE, buffer + nrecv);
 
-            std::cout << "✅ Принят и расшифрован кадр (" << data_len << " байт)\n";
-            std::cout << "✅ Хеши совпадают — кадр корректен\n";
+            // Расшифровываем
+            std::vector<unsigned char> decrypted(ciphertext.size());
+            unsigned long long decrypted_len = 0;
+
+            int result = crypto_aead_chacha20poly1305_ietf_decrypt(
+                decrypted.data(), &decrypted_len,
+                nullptr,
+                ciphertext.data(), ciphertext.size(),
+                nullptr, 0,
+                nonce.data(), rx_key.data());
+
+            if (result != 0)
+            {
+                std::cerr << "❌ Ошибка расшифровки!\n";
+                continue;
+            }
+
+            // Проверяем, что длина хотя бы 32 байта (под хеш)
+            if (decrypted_len < HASH_SIZE)
+            {
+                std::cerr << "❌ Слишком маленький расшифрованный буфер!\n";
+                continue;
+            }
+
+            // Первые 32 байта — это хеш
+            unsigned char received_hash[HASH_SIZE];
+            std::memcpy(received_hash, decrypted.data(), HASH_SIZE);
+
+            // Остальная часть – это сообщение
+            size_t msg_len = decrypted_len - HASH_SIZE;
+
+            // Считаем свой хеш
+            unsigned char actual_hash[HASH_SIZE];
+            crypto_hash_sha256(actual_hash,
+                               decrypted.data() + HASH_SIZE, // данные начинаются через 32 байта
+                               msg_len);
+
+            // Сравниваем
+            if (std::memcmp(received_hash, actual_hash, HASH_SIZE) != 0)
+            {
+                std::cerr << "❌ Хеш не совпадает — данные повреждены!\n";
+                continue;
+            }
+
+            if (message_mode)
+            {
+                std::vector<unsigned char> payload(decrypted.data() + HASH_SIZE, decrypted.data() + HASH_SIZE + msg_len);
+                std::string received_msg(reinterpret_cast<char *>(payload.data()), payload.size());
+                std::cout << "📩 Получено сообщение (" << msg_len << " байт): " << received_msg << "\n";
+            }
+            else
+            {
+                size_t data_len = decrypted_len - HASH_SIZE;
+                std::vector<unsigned char> data_buf(data_len);
+                std::memcpy(data_buf.data(), decrypted.data() + HASH_SIZE, data_len);
+
+                // Пишем расшифрованный (и проверенный) кадр в tap1
+                write(tap_fd, data_buf.data(), data_len);
+
+                std::cout << "✅ Принят и расшифрован кадр (" << data_len << " байт)\n";
+                std::cout << "✅ Хеши совпадают — кадр корректен\n";
+            }
         }
     }
 
