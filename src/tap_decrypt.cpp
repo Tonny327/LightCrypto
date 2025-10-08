@@ -201,7 +201,7 @@ int main(int argc, char *argv[])
 
     // Initialize optional codec
     digitalcodec::DigitalCodec codec;
-    if (use_codec && message_mode)
+    if (use_codec)
     {
         try {
             codec.configure(codec_params);
@@ -241,75 +241,55 @@ int main(int argc, char *argv[])
         }
         else
         {
-            // СТАРЫЙ РЕЖИМ: libsodium AEAD расшифровка
-            if (nrecv <= NONCE_SIZE)
-                continue;
-
-            // Разделяем nonce и ciphertext
-            std::vector<unsigned char> nonce(buffer, buffer + NONCE_SIZE);
-            std::vector<unsigned char> ciphertext(buffer + NONCE_SIZE, buffer + nrecv);
-
-            // Расшифровываем
-            std::vector<unsigned char> decrypted(ciphertext.size());
-            unsigned long long decrypted_len = 0;
-
-            int result = crypto_aead_chacha20poly1305_ietf_decrypt(
-                decrypted.data(), &decrypted_len,
-                nullptr,
-                ciphertext.data(), ciphertext.size(),
-                nullptr, 0,
-                nonce.data(), rx_key.data());
-
-            if (result != 0)
+            if (use_codec)
             {
-                std::cerr << "❌ Ошибка расшифровки!\n";
-                continue;
-            }
-
-            // Проверяем, что длина хотя бы 32 байта (под хеш)
-            if (decrypted_len < HASH_SIZE)
-            {
-                std::cerr << "❌ Слишком маленький расшифрованный буфер!\n";
-                continue;
-            }
-
-            // Первые 32 байта — это хеш
-            unsigned char received_hash[HASH_SIZE];
-            std::memcpy(received_hash, decrypted.data(), HASH_SIZE);
-
-            // Остальная часть – это сообщение
-            size_t msg_len = decrypted_len - HASH_SIZE;
-
-            // Считаем свой хеш
-            unsigned char actual_hash[HASH_SIZE];
-            crypto_hash_sha256(actual_hash,
-                               decrypted.data() + HASH_SIZE, // данные начинаются через 32 байта
-                               msg_len);
-
-            // Сравниваем
-            if (std::memcmp(received_hash, actual_hash, HASH_SIZE) != 0)
-            {
-                std::cerr << "❌ Хеш не совпадает — данные повреждены!\n";
-                continue;
-            }
-
-            if (message_mode)
-            {
-                std::vector<unsigned char> payload(decrypted.data() + HASH_SIZE, decrypted.data() + HASH_SIZE + msg_len);
-                std::string received_msg(reinterpret_cast<char *>(payload.data()), payload.size());
-                std::cout << "📩 Получено сообщение (" << msg_len << " байт): " << received_msg << "\n";
+                // РЕЖИМ КОДЕКА: принимаем кодированный кадр и пишем его payload в tap1
+                std::vector<uint8_t> framed(buffer, buffer + nrecv);
+                std::vector<uint8_t> decoded_bytes = codec.decodeMessage(framed, 0);
+                if (!message_mode)
+                {
+                    if (!decoded_bytes.empty()) write(tap_fd, decoded_bytes.data(), decoded_bytes.size());
+                    std::cout << "✅ Принят и раскодирован кадр (" << decoded_bytes.size() << " байт)\n";
+                }
+                else
+                {
+                    std::string received_msg(decoded_bytes.begin(), decoded_bytes.end());
+                    std::cout << "📩 Получено сообщение (" << received_msg.size() << " байт): \"" << received_msg << "\"\n";
+                }
             }
             else
             {
+                // СТАРЫЙ РЕЖИМ: libsodium AEAD расшифровка
+                if (nrecv <= NONCE_SIZE) continue;
+                std::vector<unsigned char> nonce(buffer, buffer + NONCE_SIZE);
+                std::vector<unsigned char> ciphertext(buffer + NONCE_SIZE, buffer + nrecv);
+                std::vector<unsigned char> decrypted(ciphertext.size());
+                unsigned long long decrypted_len = 0;
+                int result = crypto_aead_chacha20poly1305_ietf_decrypt(
+                    decrypted.data(), &decrypted_len,
+                    nullptr,
+                    ciphertext.data(), ciphertext.size(),
+                    nullptr, 0,
+                    nonce.data(), rx_key.data());
+                if (result != 0) { std::cerr << "❌ Ошибка расшифровки!\n"; continue; }
+                if (decrypted_len < HASH_SIZE) { std::cerr << "❌ Слишком маленький расшифрованный буфер!\n"; continue; }
+                unsigned char received_hash[HASH_SIZE];
+                std::memcpy(received_hash, decrypted.data(), HASH_SIZE);
                 size_t data_len = decrypted_len - HASH_SIZE;
-                std::vector<unsigned char> data_buf(data_len);
-                std::memcpy(data_buf.data(), decrypted.data() + HASH_SIZE, data_len);
-
-                // Пишем расшифрованный (и проверенный) кадр в tap1
-                write(tap_fd, data_buf.data(), data_len);
-
-                std::cout << "✅ Принят и расшифрован кадр (" << data_len << " байт)\n";
-                std::cout << "✅ Хеши совпадают — кадр корректен\n";
+                unsigned char actual_hash[HASH_SIZE];
+                crypto_hash_sha256(actual_hash, decrypted.data() + HASH_SIZE, data_len);
+                if (std::memcmp(received_hash, actual_hash, HASH_SIZE) != 0) { std::cerr << "❌ Хеш не совпадает — данные повреждены!\n"; continue; }
+                if (message_mode)
+                {
+                    std::string received_msg(reinterpret_cast<char *>(decrypted.data() + HASH_SIZE), data_len);
+                    std::cout << "📩 Получено сообщение (" << data_len << " байт): " << received_msg << "\n";
+                }
+                else
+                {
+                    write(tap_fd, decrypted.data() + HASH_SIZE, data_len);
+                    std::cout << "✅ Принят и расшифрован кадр (" << data_len << " байт)\n";
+                    std::cout << "✅ Хеши совпадают — кадр корректен\n";
+                }
             }
         }
     }

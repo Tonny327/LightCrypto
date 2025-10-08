@@ -237,7 +237,7 @@ int main(int argc, char *argv[])
 
     // Initialize optional codec
     digitalcodec::DigitalCodec codec;
-    if (use_codec && message_mode)
+    if (use_codec)
     {
         try {
             codec.configure(codec_params);
@@ -316,45 +316,43 @@ int main(int argc, char *argv[])
     }
     else
     {
-
         // Режим отправки Ethernet-кадров из tap
         while (true)
         {
-            // Читаем кадр из tap0
             unsigned char buffer[MAX_PACKET_SIZE];
             ssize_t nread = read(tap_fd, buffer, sizeof(buffer));
-            if (nread <= 0)
-                continue;
+            if (nread <= 0) continue;
 
-            // Считаем SHA-256 от кадра
-            unsigned char hash_buf[HASH_SIZE];
-            crypto_hash_sha256(hash_buf, buffer, nread);
-
-            // Формируем plaintext = [32 байта хеша] + [сам кадр]
-            std::vector<unsigned char> plaintext;
-            plaintext.insert(plaintext.end(), hash_buf, hash_buf + HASH_SIZE);
-            plaintext.insert(plaintext.end(), buffer, buffer + nread);
-
-            // Генерируем nonce
-            randombytes_buf(nonce.data(), nonce.size());
-
-            // Нужно шифровать plaintext
-            std::vector<unsigned char> encrypted(plaintext.size() + crypto_aead_chacha20poly1305_IETF_ABYTES);
-            unsigned long long encrypted_len = 0;
-
-            crypto_aead_chacha20poly1305_ietf_encrypt(
-                encrypted.data(), &encrypted_len,
-                plaintext.data(), plaintext.size(), // <-- передаём всё
-                nullptr, 0, nullptr,
-                nonce.data(), tx_key.data());
-
-            // nonce + encrypted
-            std::vector<unsigned char> packet;
-            packet.insert(packet.end(), nonce.begin(), nonce.end());
-            packet.insert(packet.end(), encrypted.begin(), encrypted.begin() + encrypted_len);
-
-            sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
-            std::cout << "📤 Отправлен зашифрованный кадр (" << nread << " байт)\n";
+            if (use_codec)
+            {
+                // Кодек: кодируем кадр целиком как сообщение и отправляем напрямую
+                std::vector<uint8_t> payload(buffer, buffer + nread);
+                std::vector<uint8_t> framed = codec.encodeMessage(payload);
+                sendto(sock, framed.data(), framed.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+                std::cout << "📤 Отправлен кодированный кадр (" << nread << " байт)\n";
+            }
+            else
+            {
+                // Старый режим: AEAD
+                unsigned char hash_buf[HASH_SIZE];
+                crypto_hash_sha256(hash_buf, buffer, nread);
+                std::vector<unsigned char> plaintext;
+                plaintext.insert(plaintext.end(), hash_buf, hash_buf + HASH_SIZE);
+                plaintext.insert(plaintext.end(), buffer, buffer + nread);
+                randombytes_buf(nonce.data(), nonce.size());
+                std::vector<unsigned char> encrypted(plaintext.size() + crypto_aead_chacha20poly1305_IETF_ABYTES);
+                unsigned long long encrypted_len = 0;
+                crypto_aead_chacha20poly1305_ietf_encrypt(
+                    encrypted.data(), &encrypted_len,
+                    plaintext.data(), plaintext.size(),
+                    nullptr, 0, nullptr,
+                    nonce.data(), tx_key.data());
+                std::vector<unsigned char> packet;
+                packet.insert(packet.end(), nonce.begin(), nonce.end());
+                packet.insert(packet.end(), encrypted.begin(), encrypted.begin() + encrypted_len);
+                sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+                std::cout << "📤 Отправлен зашифрованный кадр (" << nread << " байт)\n";
+            }
         }
     }
 
