@@ -40,6 +40,7 @@ int open_tap(const std::string &dev_name)
 
     return fd;
 }
+
 void send_frames(int tap_fd, int sock, const sockaddr_in &dest_addr, const std::vector<unsigned char> &key)
 {
     std::vector<unsigned char> nonce(NONCE_SIZE);
@@ -187,16 +188,20 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        // Создаём второй сокет для отправки
-        int send_sock = socket(AF_INET, SOCK_DGRAM, 0);
-        if (send_sock < 0)
+        // Запускаем отправку кадров в отдельном потоке ТОЛЬКО если НЕ режим сообщений
+        if (!message_mode)
         {
-            perror("send socket");
-            return 1;
-        }
+            // Создаём второй сокет для отправки
+            int send_sock = socket(AF_INET, SOCK_DGRAM, 0);
+            if (send_sock < 0)
+            {
+                perror("send socket");
+                return 1;
+            }
 
-        // Запускаем отправку кадров в отдельном потоке
-        send_thread = std::thread(send_frames, tap_fd, send_sock, sender_addr, std::ref(tx_key));
+            send_thread = std::thread(send_frames, tap_fd, send_sock, sender_addr, std::ref(tx_key));
+            std::cout << "🔄 Двунаправленная передача включена\n";
+        }
     }
 
     // Initialize optional codec
