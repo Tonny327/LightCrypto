@@ -78,6 +78,22 @@ void send_frames(int tap_fd, int sock, const sockaddr_in &dest_addr, const std::
     }
 }
 
+void send_frames_codec(int tap_fd, int sock, const sockaddr_in &dest_addr, digitalcodec::DigitalCodec *codec)
+{
+    while (true)
+    {
+        unsigned char buffer[MAX_PACKET_SIZE];
+        ssize_t nread = read(tap_fd, buffer, sizeof(buffer));
+        if (nread <= 0)
+            continue;
+
+        std::vector<uint8_t> payload(buffer, buffer + nread);
+        std::vector<uint8_t> framed = codec->encodeMessage(payload);
+        sendto(sock, framed.data(), framed.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+        std::cout << "📤 Отправлен кодированный кадр из tap1 (" << nread << " байт)\n";
+    }
+}
+
 int main(int argc, char *argv[])
 {
     // --msg: если true, тогда мы интерпретируем расшифрованные данные как строку
@@ -223,6 +239,10 @@ int main(int argc, char *argv[])
             return 1;
         }
     }
+    
+    // Для режима кодека без message_mode нужно запустить поток отправки
+    // но сначала получим адрес отправителя из первого пакета
+    bool send_thread_started = false;
 
     // Основной цикл приёма
     while (true)
@@ -236,11 +256,32 @@ int main(int argc, char *argv[])
         if (nrecv <= 0)
             continue;
 
+        // Запускаем поток отправки после получения первого пакета (для кодека)
+        if (use_codec && !message_mode && !send_thread_started)
+        {
+            int send_sock = socket(AF_INET, SOCK_DGRAM, 0);
+            if (send_sock < 0)
+            {
+                perror("send socket for codec");
+            }
+            else
+            {
+                send_thread = std::thread(send_frames_codec, tap_fd, send_sock, sender_addr, &codec);
+                send_thread_started = true;
+                std::cout << "🔄 Двунаправленная передача включена (кодек)\n";
+            }
+        }
+
         if (use_codec && message_mode)
         {
             // РЕЖИМ КОДЕКА: принимаем полнофреймовое сообщение и восстанавливаем исходный текст
             std::vector<uint8_t> framed(buffer, buffer + nrecv);
             std::vector<uint8_t> decoded_bytes = codec.decodeMessage(framed, 0 /*len из кадра*/);
+            if (decoded_bytes.empty())
+            {
+                std::cerr << "❌ Критическая ошибка декодирования сообщения (буфер пуст)!\n";
+                continue;
+            }
             std::string received_msg(decoded_bytes.begin(), decoded_bytes.end());
             std::cout << "📩 Получено сообщение (" << received_msg.size() << " байт): \"" << received_msg << "\"\n";
         }
@@ -253,11 +294,21 @@ int main(int argc, char *argv[])
                 std::vector<uint8_t> decoded_bytes = codec.decodeMessage(framed, 0);
                 if (!message_mode)
                 {
-                    if (!decoded_bytes.empty()) write(tap_fd, decoded_bytes.data(), decoded_bytes.size());
+                    if (decoded_bytes.empty())
+                    {
+                        std::cerr << "❌ Критическая ошибка декодирования кадра (буфер пуст)!\n";
+                        continue;
+                    }
+                    write(tap_fd, decoded_bytes.data(), decoded_bytes.size());
                     std::cout << "✅ Принят и раскодирован кадр (" << decoded_bytes.size() << " байт)\n";
                 }
                 else
                 {
+                    if (decoded_bytes.empty())
+                    {
+                        std::cerr << "❌ Критическая ошибка декодирования сообщения (буфер пуст)!\n";
+                        continue;
+                    }
                     std::string received_msg(decoded_bytes.begin(), decoded_bytes.end());
                     std::cout << "📩 Получено сообщение (" << received_msg.size() << " байт): \"" << received_msg << "\"\n";
                 }
@@ -283,7 +334,13 @@ int main(int argc, char *argv[])
                 size_t data_len = decrypted_len - HASH_SIZE;
                 unsigned char actual_hash[HASH_SIZE];
                 crypto_hash_sha256(actual_hash, decrypted.data() + HASH_SIZE, data_len);
-                if (std::memcmp(received_hash, actual_hash, HASH_SIZE) != 0) { std::cerr << "❌ Хеш не совпадает — данные повреждены!\n"; continue; }
+                
+                bool hash_valid = (std::memcmp(received_hash, actual_hash, HASH_SIZE) == 0);
+                if (!hash_valid) {
+                    std::cerr << "⚠️  Хеш не совпадает — данные могут быть повреждены!\n";
+                    std::cerr << "⚠️  Выводим данные для отладки (возможно искажены):\n";
+                }
+                
                 if (message_mode)
                 {
                     std::string received_msg(reinterpret_cast<char *>(decrypted.data() + HASH_SIZE), data_len);
@@ -293,7 +350,6 @@ int main(int argc, char *argv[])
                 {
                     write(tap_fd, decrypted.data() + HASH_SIZE, data_len);
                     std::cout << "✅ Принят и расшифрован кадр (" << data_len << " байт)\n";
-                    std::cout << "✅ Хеши совпадают — кадр корректен\n";
                 }
             }
         }

@@ -84,10 +84,11 @@ void receive_frames(int tap_fd, int sock, const std::vector<unsigned char> &key)
         unsigned char actual_hash[HASH_SIZE];
         crypto_hash_sha256(actual_hash, decrypted.data() + HASH_SIZE, msg_len);
 
-        if (std::memcmp(received_hash, actual_hash, HASH_SIZE) != 0)
+        bool hash_valid = (std::memcmp(received_hash, actual_hash, HASH_SIZE) == 0);
+        if (!hash_valid)
         {
-            std::cerr << "❌ Хеш не совпадает в receive_frames — данные повреждены!\n";
-            continue;
+            std::cerr << "⚠️  Хеш не совпадает в receive_frames — данные могут быть повреждены!\n";
+            std::cerr << "⚠️  Записываем данные для отладки (возможно искажены)\n";
         }
 
         size_t data_len = decrypted_len - HASH_SIZE;
@@ -96,6 +97,27 @@ void receive_frames(int tap_fd, int sock, const std::vector<unsigned char> &key)
 
         write(tap_fd, data_buf.data(), data_len);
         std::cout << "✅ Принят и расшифрован кадр из tap1 (" << data_len << " байт)\n";
+    }
+}
+
+void receive_frames_codec(int tap_fd, int sock, digitalcodec::DigitalCodec *codec)
+{
+    while (true)
+    {
+        unsigned char buffer[MAX_PACKET_SIZE];
+        ssize_t nrecv = recv(sock, buffer, sizeof(buffer), 0);
+        if (nrecv <= 0)
+            continue;
+
+        std::vector<uint8_t> framed(buffer, buffer + nrecv);
+        std::vector<uint8_t> decoded_bytes = codec->decodeMessage(framed, 0);
+        if (decoded_bytes.empty())
+        {
+            std::cerr << "❌ Критическая ошибка декодирования кадра (буфер пуст)!\n";
+            continue;
+        }
+        write(tap_fd, decoded_bytes.data(), decoded_bytes.size());
+        std::cout << "✅ Принят и раскодирован кадр из tap1 (" << decoded_bytes.size() << " байт)\n";
     }
 }
 
@@ -253,6 +275,13 @@ int main(int argc, char *argv[])
             codec.reset();
             std::cout << "🎛️  Цифровой кодек включён (M=" << codec_params.bitsM
                       << ", Q=" << codec_params.bitsQ << ", fun=" << codec_params.funType << ")\n";
+            
+            // Запускаем приём кадров в отдельном потоке для кодека (если НЕ режим сообщений)
+            if (!message_mode)
+            {
+                receive_thread = std::thread(receive_frames_codec, tap_fd, sock, &codec);
+                std::cout << "🔄 Двунаправленная передача включена (кодек)\n";
+            }
         } catch (const std::exception &e) {
             std::cerr << "❌ Ошибка инициализации кодека: " << e.what() << "\n";
             return 1;

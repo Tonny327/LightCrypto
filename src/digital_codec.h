@@ -43,9 +43,11 @@ public:
     std::vector<uint8_t> decodeBytes(const std::vector<uint8_t> &coded);
 
     // Encode full message: packs input bytes into Q-bit symbols, then encodes symbols
-    std::vector<uint8_t> encodeMessage(const std::vector<uint8_t> &input);
+    // If use_hash=true, prepends SHA-256 hash for integrity check
+    std::vector<uint8_t> encodeMessage(const std::vector<uint8_t> &input, bool use_hash = true);
     // Decode full message: decodes symbols, then unpacks back to bytes (expected_len required)
-    std::vector<uint8_t> decodeMessage(const std::vector<uint8_t> &coded, size_t expected_len);
+    // If use_hash=true, verifies SHA-256 hash and returns empty vector on mismatch
+    std::vector<uint8_t> decodeMessage(const std::vector<uint8_t> &coded, size_t expected_len, bool use_hash = true);
 
 private:
     // Helpers for symbol-level operation

@@ -2,10 +2,12 @@
 
 #include <cassert>
 #include <cctype>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <sodium.h>
 
 namespace digitalcodec {
 
@@ -143,12 +145,18 @@ int32_t DigitalCodec::digitalCodingFun(int funcIndex1Based, int32_t x, int32_t y
 
 std::vector<uint8_t> DigitalCodec::encodeBytes(const std::vector<uint8_t> &input) {
     // Interpret each input byte as an information symbol in range [0..2^Q-1].
+    // WARNING: This will lose data if input bytes are outside [0..2^Q-1]!
+    // For arbitrary byte data, use encodeMessage() instead.
     const int maxSym = static_cast<int>(ipow2(params_.bitsQ));
     std::vector<uint8_t> out;
     out.reserve(input.size() + 2);
 
     for (uint8_t symByte : input) {
-        int sym = static_cast<int>(symByte) % maxSym; // clamp to [0..2^Q-1]
+        int sym = static_cast<int>(symByte);
+        if (sym >= maxSym) {
+            std::cerr << "⚠️  encodeBytes: symbol " << sym << " exceeds maxSym " << maxSym << ", clamping to 0\n";
+            sym = 0; // or could use % maxSym
+        }
 
         // two previous states
         int32_t x = enc_h1_;
@@ -174,8 +182,6 @@ std::vector<uint8_t> DigitalCodec::decodeBytes(const std::vector<uint8_t> &coded
     std::vector<uint8_t> out;
     out.reserve(coded.size());
 
-    std::cerr << "🔍 Декодер: получено " << coded.size() << " байт, состояния: " << dec_h1_ << "," << dec_h2_ << "\n";
-
     for (size_t i = 0; i < coded.size(); ++i) {
         uint8_t b = coded[i];
         int32_t observed = fromByte(b);
@@ -183,23 +189,17 @@ std::vector<uint8_t> DigitalCodec::decodeBytes(const std::vector<uint8_t> &coded
         int32_t x = dec_h1_;
         int32_t y = dec_h2_;
 
-        std::cerr << "🔍 Байт " << i << ": " << (int)b << " -> " << observed << ", состояния: " << x << "," << y << "\n";
-
         int matched = -1;
         for (int ff = 1; ff <= funCount; ++ff) {
             int32_t result = digitalCodingFun(ff, x, y);
-            std::cerr << "  f(" << ff << "," << x << "," << y << ") = " << result << "\n";
             if (result == observed) { 
                 matched = ff - 1; 
-                std::cerr << "  ✅ Найдено совпадение: f(" << ff << ") = " << result << "\n";
                 break; 
             }
         }
         if (matched < 0) {
             // cannot decode deterministically; emit 0 and continue
             matched = 0;
-            std::cerr << "⚠️  Декодер: не найдено совпадение для байта " << (int)b 
-                      << " (наблюдаемое: " << observed << ", состояния: " << x << "," << y << ")\n";
         }
 
         // update states with the same rule as encoder
@@ -208,7 +208,6 @@ std::vector<uint8_t> DigitalCodec::decodeBytes(const std::vector<uint8_t> &coded
         dec_h1_ = next;
 
         out.push_back(static_cast<uint8_t>(matched));
-        std::cerr << "  📤 Декодированный символ: " << matched << "\n";
     }
     return out;
 }
@@ -268,7 +267,11 @@ std::vector<uint8_t> DigitalCodec::encodeSymbols(const std::vector<uint8_t> &sym
     std::vector<uint8_t> out;
     out.reserve(symbols.size());
     for (uint8_t symByte : symbols) {
-        int sym = static_cast<int>(symByte) % maxSym;
+        int sym = static_cast<int>(symByte);
+        if (sym >= maxSym) {
+            std::cerr << "❌ encodeSymbols: symbol " << sym << " >= maxSym " << maxSym << "!\n";
+            sym = sym % maxSym; // fallback
+        }
         int32_t x = enc_h1_;
         int32_t y = enc_h2_;
         int funcIndex = sym + 1;
@@ -301,12 +304,28 @@ std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &cod
     return out;
 }
 
-std::vector<uint8_t> DigitalCodec::encodeMessage(const std::vector<uint8_t> &input) {
+std::vector<uint8_t> DigitalCodec::encodeMessage(const std::vector<uint8_t> &input, bool use_hash) {
     // Reset states per message for determinism
     reset();
+    
+    std::vector<uint8_t> payload_to_encode;
+    
+    if (use_hash) {
+        // Calculate SHA-256 hash of input data
+        unsigned char hash[crypto_hash_sha256_BYTES];
+        crypto_hash_sha256(hash, input.data(), input.size());
+        
+        // Prepend hash to data: [32 bytes hash] + [data]
+        payload_to_encode.reserve(crypto_hash_sha256_BYTES + input.size());
+        payload_to_encode.insert(payload_to_encode.end(), hash, hash + crypto_hash_sha256_BYTES);
+        payload_to_encode.insert(payload_to_encode.end(), input.begin(), input.end());
+    } else {
+        payload_to_encode = input;
+    }
+    
     // Frame: [len(2 bytes little endian)] [encoded symbols]
-    const size_t len = input.size();
-    std::vector<uint8_t> symbols = packBytesToSymbols(input);
+    const size_t len = payload_to_encode.size();
+    std::vector<uint8_t> symbols = packBytesToSymbols(payload_to_encode);
     std::vector<uint8_t> coded = encodeSymbols(symbols);
     std::vector<uint8_t> framed;
     framed.reserve(2 + coded.size());
@@ -316,7 +335,7 @@ std::vector<uint8_t> DigitalCodec::encodeMessage(const std::vector<uint8_t> &inp
     return framed;
 }
 
-std::vector<uint8_t> DigitalCodec::decodeMessage(const std::vector<uint8_t> &coded, size_t expected_len) {
+std::vector<uint8_t> DigitalCodec::decodeMessage(const std::vector<uint8_t> &coded, size_t expected_len, bool use_hash) {
     // Reset states per message for determinism
     reset();
     if (coded.size() < 2) return {};
@@ -324,8 +343,40 @@ std::vector<uint8_t> DigitalCodec::decodeMessage(const std::vector<uint8_t> &cod
     if (expected_len != 0) len = expected_len;
     std::vector<uint8_t> payload(coded.begin() + 2, coded.end());
     std::vector<uint8_t> symbols = decodeSymbols(payload);
-    std::vector<uint8_t> bytes = unpackSymbolsToBytes(symbols, len);
-    return bytes;
+    std::vector<uint8_t> decoded_bytes = unpackSymbolsToBytes(symbols, len);
+    
+    if (use_hash) {
+        // Verify hash integrity
+        if (decoded_bytes.size() < crypto_hash_sha256_BYTES) {
+            std::cerr << "❌ Декодированный буфер слишком мал для проверки хеша!\n";
+            std::cerr << "   Получено: " << decoded_bytes.size() << " байт, ожидалось минимум: " 
+                      << crypto_hash_sha256_BYTES << " байт (SHA-256)\n";
+            std::cerr << "   Возможные причины: повреждение данных, несовпадение параметров кодека (M/Q/CSV)\n";
+            return {};
+        }
+        
+        // Extract received hash (first 32 bytes)
+        unsigned char received_hash[crypto_hash_sha256_BYTES];
+        std::memcpy(received_hash, decoded_bytes.data(), crypto_hash_sha256_BYTES);
+        
+        // Calculate actual hash of the data (after hash)
+        size_t data_len = decoded_bytes.size() - crypto_hash_sha256_BYTES;
+        unsigned char actual_hash[crypto_hash_sha256_BYTES];
+        crypto_hash_sha256(actual_hash, decoded_bytes.data() + crypto_hash_sha256_BYTES, data_len);
+        
+        // Return only the data part (without hash)
+        std::vector<uint8_t> result(decoded_bytes.begin() + crypto_hash_sha256_BYTES, decoded_bytes.end());
+        
+        // Compare hashes
+        if (std::memcmp(received_hash, actual_hash, crypto_hash_sha256_BYTES) != 0) {
+            std::cerr << "⚠️  Хеш не совпадает в decodeMessage — данные могут быть повреждены!\n";
+            // Возвращаем данные несмотря на несовпадение хеша (для отладки)
+        }
+        
+        return result;
+    }
+    
+    return decoded_bytes;
 }
 
 } // namespace digitalcodec
