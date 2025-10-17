@@ -42,9 +42,6 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
         main_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         main_canvas.configure(yscrollcommand=scrollbar.set)
         
-        # Поддержка прокрутки колесиком мыши
-        self._bind_mouse_wheel(main_canvas, scrollable_frame)
-        
         # ВАЖНО: Сначала панель параметров кодека
         self.codec_panel = CodecPanel(scrollable_frame, self.config, self.terminal)
         self.codec_panel.pack(fill=tk.X, padx=PADDING_SECTION, pady=PADDING_SECTION)
@@ -52,13 +49,15 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
         # Затем остальные панели
         self._create_tap_panel(scrollable_frame)
         self._create_network_panel(scrollable_frame)
-        self._create_control_panel(scrollable_frame)
         self._create_terminal_panel(scrollable_frame)
         self._create_utils_panel(scrollable_frame)
         
         # Размещение
         main_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Поддержка прокрутки колесиком мыши (ПОСЛЕ создания всех виджетов)
+        self._bind_mouse_wheel(main_canvas, scrollable_frame)
         
         # Обновляем заголовок окна
         self.root.title(self._window_title)

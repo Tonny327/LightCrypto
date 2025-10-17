@@ -190,9 +190,9 @@ cd /path/to/LightCrypto
 **Шаг 2: Запуск программы**
 ```bash
 sudo ./build/tap_decrypt \
-  --codec CipherKeys/Q=2_4.csv \
+  --codec CipherKeys/QDM-6.csv \
   --M 8 \
-  --Q 2 \
+  --Q 6 \
   --fun 3 \
   --h1 1337 \
   --h2 -2048 \
@@ -227,9 +227,9 @@ cd /path/to/LightCrypto
 **Шаг 2: Запуск программы**
 ```bash
 sudo ./build/tap_encrypt \
-  --codec CipherKeys/Q=2_4.csv \
+  --codec CipherKeys/QDM-6.csv \
   --M 8 \
-  --Q 2 \
+  --Q 6 \
   --fun 3 \
   --h1 1337 \
   --h2 -2048 \

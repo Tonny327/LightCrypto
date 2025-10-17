@@ -2,7 +2,9 @@
 
 #include <cassert>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -91,19 +93,38 @@ int32_t DigitalCodec::wrapM(int64_t v) const {
     return static_cast<int32_t>(r);
 }
 
-uint8_t DigitalCodec::toByte(int32_t v) const {
-    // store as two's complement lower M bits
-    uint32_t mod = static_cast<uint32_t>(ipow2(params_.bitsM));
-    uint32_t u = static_cast<uint32_t>(v) & (mod - 1);
-    return static_cast<uint8_t>(u);
+int DigitalCodec::bytesPerSymbol() const {
+    return (params_.bitsM + 7) / 8;  // Round up: M=8->1, M=9..16->2, M=17..24->3, M=25..31->4
 }
 
-int32_t DigitalCodec::fromByte(uint8_t b) const {
-    uint32_t val = b;
-    if (params_.bitsM < 8) {
-        val &= (1u << params_.bitsM) - 1u;
+void DigitalCodec::toBytes(int32_t v, std::vector<uint8_t>& out) const {
+    // Store as two's complement in little-endian byte order
+    const int numBytes = bytesPerSymbol();
+    uint32_t mod = static_cast<uint32_t>(ipow2(params_.bitsM));
+    uint32_t u = static_cast<uint32_t>(v) & (mod - 1);
+    
+    for (int i = 0; i < numBytes; ++i) {
+        out.push_back(static_cast<uint8_t>(u & 0xFF));
+        u >>= 8;
     }
-    // sign-extend
+}
+
+int32_t DigitalCodec::fromBytes(const uint8_t* data) const {
+    const int numBytes = bytesPerSymbol();
+    uint32_t val = 0;
+    
+    // Read in little-endian byte order
+    for (int i = 0; i < numBytes; ++i) {
+        val |= static_cast<uint32_t>(data[i]) << (8 * i);
+    }
+    
+    // Mask to M bits
+    if (params_.bitsM < 32) {
+        uint32_t mask = (1u << params_.bitsM) - 1u;
+        val &= mask;
+    }
+    
+    // Sign-extend from M bits
     uint32_t signBit = 1u << (params_.bitsM - 1);
     if (val & signBit) {
         uint32_t mod = 1u << params_.bitsM;
@@ -171,7 +192,7 @@ std::vector<uint8_t> DigitalCodec::encodeBytes(const std::vector<uint8_t> &input
         enc_h2_ = enc_h1_;
         enc_h1_ = next;
 
-        out.push_back(toByte(next));
+        toBytes(next, out);
     }
     return out;
 }
@@ -179,12 +200,12 @@ std::vector<uint8_t> DigitalCodec::encodeBytes(const std::vector<uint8_t> &input
 std::vector<uint8_t> DigitalCodec::decodeBytes(const std::vector<uint8_t> &coded) {
     // Best-effort inverse assuming unique mapping (no collisions, no skips)
     const int funCount = static_cast<int>(ipow2(params_.bitsQ));
+    const int bps = bytesPerSymbol();
     std::vector<uint8_t> out;
-    out.reserve(coded.size());
+    out.reserve(coded.size() / bps);
 
-    for (size_t i = 0; i < coded.size(); ++i) {
-        uint8_t b = coded[i];
-        int32_t observed = fromByte(b);
+    for (size_t i = 0; i + bps <= coded.size(); i += bps) {
+        int32_t observed = fromBytes(&coded[i]);
 
         int32_t x = dec_h1_;
         int32_t y = dec_h2_;
@@ -263,43 +284,185 @@ std::vector<uint8_t> DigitalCodec::unpackSymbolsToBytes(const std::vector<uint8_
 }
 
 std::vector<uint8_t> DigitalCodec::encodeSymbols(const std::vector<uint8_t> &symbols) {
-    const int maxSym = static_cast<int>(ipow2(params_.bitsQ));
+    const int funCount = static_cast<int>(ipow2(params_.bitsQ));
     std::vector<uint8_t> out;
     out.reserve(symbols.size());
+    
     for (uint8_t symByte : symbols) {
         int sym = static_cast<int>(symByte);
-        if (sym >= maxSym) {
-            std::cerr << "❌ encodeSymbols: symbol " << sym << " >= maxSym " << maxSym << "!\n";
-            sym = sym % maxSym; // fallback
+        if (sym >= funCount) {
+            std::cerr << "❌ encodeSymbols: symbol " << sym << " >= funCount " << funCount << "!\n";
+            sym = sym % funCount;
         }
+        
         int32_t x = enc_h1_;
         int32_t y = enc_h2_;
-        int funcIndex = sym + 1;
-        int32_t next = digitalCodingFun(funcIndex, x, y);
+        
+        // MATLAB: Вычисляем все функции для проверки коллизий
+        std::vector<int32_t> RR(funCount);
+        for (int ff = 0; ff < funCount; ++ff) {
+            RR[ff] = digitalCodingFun(ff + 1, x, y);
+        }
+        
+        // MATLAB: Проверяем наличие коллизий (unique)
+        std::vector<int32_t> uniqueVals;
+        std::vector<int> firstIndices;  // IA в MATLAB
+        for (int ff = 0; ff < funCount; ++ff) {
+            bool found = false;
+            for (size_t u = 0; u < uniqueVals.size(); ++u) {
+                if (RR[ff] == uniqueVals[u]) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                uniqueVals.push_back(RR[ff]);
+                firstIndices.push_back(ff);
+            }
+        }
+        
+        int32_t next;
+        bool skipSymbol = false;
+        
+        // MATLAB: if length(CoderData) == FunCount
+        if (static_cast<int>(uniqueVals.size()) == funCount) {
+            // Нет коллизий - кодируем нормально
+            next = RR[sym];
+        } else {
+            // Есть коллизии - определяем индексы дубликатов
+            // DupData = setdiff(1:FunCount, IA);
+            std::vector<int> dupIndices;
+            for (int ff = 0; ff < funCount; ++ff) {
+                bool isFirst = false;
+                for (int idx : firstIndices) {
+                    if (ff == idx) {
+                        isFirst = true;
+                        break;
+                    }
+                }
+                if (!isFirst) {
+                    dupIndices.push_back(ff);
+                }
+            }
+            
+            // MATLAB: if II < DupData (проверяем, что sym меньше всех дубликатов)
+            bool symBeforeDups = true;
+            for (int dupIdx : dupIndices) {
+                if (sym >= dupIdx) {
+                    symBeforeDups = false;
+                    break;
+                }
+            }
+            
+            if (symBeforeDups) {
+                next = RR[sym];
+            } else {
+                // MATLAB: InfoInsteadOfRand mode
+                bool symInRR = false;
+                for (int32_t val : RR) {
+                    if ((sym + 1) == val) {  // sym+1 потому что II - это информационное состояние 1..FunCount
+                        symInRR = true;
+                        break;
+                    }
+                }
+                
+                if (!symInRR && params_.infoInsteadOfRand) {
+                    // Прямая передача информационного значения
+                    next = sym + 1;
+                } else {
+                    // MATLAB: Пропускаем символ, генерируем случайное значение
+                    skipSymbol = true;
+                    std::srand(static_cast<unsigned>(std::time(nullptr)) + sym);
+                    int32_t minVal = -(1 << (params_.bitsM - 1));
+                    int32_t maxVal = (1 << (params_.bitsM - 1)) - 1;
+                    
+                    do {
+                        next = minVal + (std::rand() % (maxVal - minVal + 1));
+                        
+                        // Проверка: не равно ни одному из RR
+                        bool inRR = false;
+                        for (int32_t val : RR) {
+                            if (next == val) {
+                                inRR = true;
+                                break;
+                            }
+                        }
+                        if (inRR) continue;
+                        
+                        // Проверка: не равно информационным значениям (если InfoInsteadOfRand)
+                        if (params_.infoInsteadOfRand && next >= 1 && next <= funCount) {
+                            continue;
+                        }
+                        
+                        break;
+                    } while (true);
+                    
+                    std::cerr << "⚠️  Пропущен символ " << sym << " из-за коллизии (Nskip++)\n";
+                }
+            }
+        }
+        
+        // Обновляем состояния
         enc_h2_ = enc_h1_;
         enc_h1_ = next;
-        out.push_back(toByte(next));
+        
+        // Записываем закодированное значение
+        toBytes(next, out);
     }
     return out;
 }
 
 std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &coded) {
     const int funCount = static_cast<int>(ipow2(params_.bitsQ));
+    const int bps = bytesPerSymbol();
     std::vector<uint8_t> out;
-    out.reserve(coded.size());
-    for (uint8_t b : coded) {
-        int32_t observed = fromByte(b);
+    out.reserve(coded.size() / bps);
+    
+    for (size_t i = 0; i + bps <= coded.size(); i += bps) {
+        int32_t observed = fromBytes(&coded[i]);
         int32_t x = dec_h1_;
         int32_t y = dec_h2_;
-        int matched = -1;
-        for (int ff = 1; ff <= funCount; ++ff) {
-            if (digitalCodingFun(ff, x, y) == observed) { matched = ff - 1; break; }
+        
+        // MATLAB: Вычисляем все функции
+        std::vector<int32_t> RR(funCount);
+        for (int ff = 0; ff < funCount; ++ff) {
+            RR[ff] = digitalCodingFun(ff + 1, x, y);
         }
-        if (matched < 0) matched = 0;
-        int32_t next = observed;
-        dec_h2_ = dec_h1_;
-        dec_h1_ = next;
-        out.push_back(static_cast<uint8_t>(matched));
+        
+        // MATLAB: Ищем совпадение Iind = find(r(k) == RR)
+        int matched = -1;
+        for (int ff = 0; ff < funCount; ++ff) {
+            if (RR[ff] == observed) {
+                matched = ff;  // Берём первое совпадение
+                break;
+            }
+        }
+        
+        if (matched >= 0) {
+            // Найдено совпадение - декодируем символ
+            int32_t next = observed;
+            dec_h2_ = dec_h1_;
+            dec_h1_ = next;
+            out.push_back(static_cast<uint8_t>(matched));
+        } else {
+            // MATLAB: Проверяем прямую передачу информации
+            // Iind = find(r(k) == 1:FunCount)
+            if (params_.infoInsteadOfRand && observed >= 1 && observed <= funCount) {
+                // Прямая передача информационного значения
+                int32_t next = observed;
+                dec_h2_ = dec_h1_;
+                dec_h1_ = next;
+                out.push_back(static_cast<uint8_t>(observed - 1));  // observed-1 для индексации от 0
+            } else {
+                // MATLAB: Пропускаем символ (Nskip++)
+                // Обновляем состояния тем же значением
+                int32_t next = observed;
+                dec_h2_ = dec_h1_;
+                dec_h1_ = next;
+                // НЕ добавляем в out - это реализация пропуска символа
+                std::cerr << "⚠️  Пропущен символ при декодировании (не найдено совпадение)\n";
+            }
+        }
     }
     return out;
 }

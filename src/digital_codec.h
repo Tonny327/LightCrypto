@@ -16,6 +16,7 @@ struct CodecParams {
     int funType = 1;         // DigitalCodingFun variant 1..5
     int32_t h1 = 7;          // initial state 1
     int32_t h2 = 23;         // initial state 2
+    bool infoInsteadOfRand = true;  // MATLAB InfoInsteadOfRand mode for collision handling
 };
 
 // COEFF is a matrix with rows = 2^Q, columns depend on funType
@@ -36,7 +37,7 @@ public:
     void reset();
 
     // Encode raw bytes into coded bytes using the digital coding scheme.
-    // Assumes M <= 8 so each state is serialized as one byte (wrap to uint8_t).
+    // Supports any M up to 31. Each state is serialized using bytesPerSymbol() bytes.
     std::vector<uint8_t> encodeBytes(const std::vector<uint8_t> &input);
 
     // Decode coded bytes back to original (best-effort, assumes no skips and collision-free coefficients)
@@ -44,10 +45,12 @@ public:
 
     // Encode full message: packs input bytes into Q-bit symbols, then encodes symbols
     // If use_hash=true, prepends SHA-256 hash for integrity check
-    std::vector<uint8_t> encodeMessage(const std::vector<uint8_t> &input, bool use_hash = true);
+    // Default: false (for MATLAB compatibility - collision handling is enough)
+    std::vector<uint8_t> encodeMessage(const std::vector<uint8_t> &input, bool use_hash = false);
     // Decode full message: decodes symbols, then unpacks back to bytes (expected_len required)
     // If use_hash=true, verifies SHA-256 hash and returns empty vector on mismatch
-    std::vector<uint8_t> decodeMessage(const std::vector<uint8_t> &coded, size_t expected_len, bool use_hash = true);
+    // Default: false (for MATLAB compatibility)
+    std::vector<uint8_t> decodeMessage(const std::vector<uint8_t> &coded, size_t expected_len, bool use_hash = false);
 
 private:
     // Helpers for symbol-level operation
@@ -62,9 +65,10 @@ private:
     // Wrap signed integer to M-bit two's complement range [-(2^(M-1))..(2^(M-1)-1)]
     int32_t wrapM(int64_t v) const;
 
-    // Serialize/deserialize one M-bit signed value to uint8_t buffer (M<=8)
-    uint8_t toByte(int32_t v) const;       // two's complement cast
-    int32_t fromByte(uint8_t b) const;     // sign-extend from M bits
+    // Serialize/deserialize one M-bit signed value to bytes (supports any M up to 31)
+    void toBytes(int32_t v, std::vector<uint8_t>& out) const;  // append bytes in little-endian
+    int32_t fromBytes(const uint8_t* data) const;              // read bytes and sign-extend
+    int bytesPerSymbol() const;                                // number of bytes needed for M bits
 
 private:
     CodecParams params_{};

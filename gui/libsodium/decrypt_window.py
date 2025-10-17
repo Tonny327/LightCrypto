@@ -61,19 +61,18 @@ class LibSodiumDecryptGUI:
         main_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         main_canvas.configure(yscrollcommand=scrollbar.set)
         
-        # Поддержка прокрутки колесиком мыши
-        self._bind_mouse_wheel(main_canvas, scrollable_frame)
-        
         # Панели
         self._create_tap_panel(scrollable_frame)
         self._create_network_panel(scrollable_frame)
-        self._create_control_panel(scrollable_frame)
         self._create_terminal_panel(scrollable_frame)
         self._create_utils_panel(scrollable_frame)
         
         # Размещение
         main_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Поддержка прокрутки колесиком мыши (ПОСЛЕ создания всех виджетов)
+        self._bind_mouse_wheel(main_canvas, scrollable_frame)
     
     def _create_tap_panel(self, parent):
         """Панель управления TAP-интерфейсом"""
@@ -202,23 +201,22 @@ class LibSodiumDecryptGUI:
         msg_check.pack(anchor=tk.W, pady=5)
         
         self._create_tooltip(msg_check, TOOLTIP_MSG_MODE)
-    
-    def _create_control_panel(self, parent):
-        """Главная кнопка запуска/остановки"""
-        frame = tk.Frame(parent, bg=COLOR_BACKGROUND)
-        frame.pack(fill=tk.X, padx=PADDING_SECTION, pady=PADDING_SECTION)
         
+        # Разделитель
+        separator = ttk.Separator(frame, orient='horizontal')
+        separator.pack(fill=tk.X, pady=8)
+        
+        # Кнопка запуска/остановки (компактная)
         self.start_button = tk.Button(
             frame,
             text=f"{EMOJI_PLAY} ЗАПУСТИТЬ ШИФРОВАНИЕ",
-            font=('Arial', 14, 'bold'),
+            font=FONT_BUTTON,
             bg=COLOR_SUCCESS,
             fg='white',
             command=self._toggle_encryption,
-            cursor='hand2',
-            height=2
+            cursor='hand2'
         )
-        self.start_button.pack(fill=tk.X, pady=10)
+        self.start_button.pack(fill=tk.X, pady=5)
     
     def _create_terminal_panel(self, parent):
         """Встроенный терминал"""
