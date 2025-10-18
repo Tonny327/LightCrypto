@@ -38,7 +38,7 @@ setup_tap_pair.sh       // Скрипт создания TAP-интерфейс�
 
 ```bash
 sudo apt update
-sudo apt install -y libsodium-dev iproute2 tcpdump iputils-ping iperf hping3
+sudo apt install -y libsodium-dev iproute2 tcpdump iputils-ping iperf hping3 python3-tk python3-pip python3-dev
 ```
 
 ### 🔨 Сборка проекта

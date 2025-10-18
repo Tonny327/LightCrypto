@@ -35,6 +35,7 @@ public:
 
     // Reset internal generator states
     void reset();
+    void syncStates(int32_t h1, int32_t h2);
 
     // Encode raw bytes into coded bytes using the digital coding scheme.
     // Supports any M up to 31. Each state is serialized using bytesPerSymbol() bytes.

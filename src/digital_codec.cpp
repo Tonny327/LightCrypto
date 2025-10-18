@@ -83,6 +83,13 @@ void DigitalCodec::reset() {
     dec_h2_ = enc_h2_;
 }
 
+void DigitalCodec::syncStates(int32_t h1, int32_t h2) {
+    enc_h1_ = wrapM(h1);
+    enc_h2_ = wrapM(h2);
+    dec_h1_ = enc_h1_;
+    dec_h2_ = enc_h2_;
+}
+
 int32_t DigitalCodec::wrapM(int64_t v) const {
     const int64_t mod = ipow2(params_.bitsM);
     int64_t r = v % mod;
@@ -468,8 +475,7 @@ std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &cod
 }
 
 std::vector<uint8_t> DigitalCodec::encodeMessage(const std::vector<uint8_t> &input, bool use_hash) {
-    // Reset states per message for determinism
-    reset();
+    // States are maintained across messages for network communication
     
     std::vector<uint8_t> payload_to_encode;
     
@@ -499,8 +505,7 @@ std::vector<uint8_t> DigitalCodec::encodeMessage(const std::vector<uint8_t> &inp
 }
 
 std::vector<uint8_t> DigitalCodec::decodeMessage(const std::vector<uint8_t> &coded, size_t expected_len, bool use_hash) {
-    // Reset states per message for determinism
-    reset();
+    // States are maintained across messages for network communication
     if (coded.size() < 2) return {};
     size_t len = (size_t)coded[0] | ((size_t)coded[1] << 8);
     if (expected_len != 0) len = expected_len;
