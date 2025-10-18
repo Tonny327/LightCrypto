@@ -11,7 +11,10 @@
 #include <sodium.h>
 #include <arpa/inet.h> // для inet_pton
 #include <thread>
+#include <chrono>
+#include <iomanip>
 #include "digital_codec.h"
+#include "file_transfer.h"
 
 
 constexpr size_t MAX_PACKET_SIZE = 2000;
@@ -121,9 +124,147 @@ void receive_frames_codec(int tap_fd, int sock, digitalcodec::DigitalCodec *code
     }
 }
 
+// Функция отправки файла через libsodium
+bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vector<unsigned char> &tx_key,
+                          const std::string &file_path)
+{
+    std::cout << "📁 Начинаем отправку файла: " << file_path << "\n";
+    
+    // Загружаем файл
+    filetransfer::FileSender sender;
+    if (!sender.load_file(file_path)) {
+        return false;
+    }
+    
+    std::vector<unsigned char> nonce(NONCE_SIZE);
+    
+    // 1. Отправляем заголовок файла
+    auto header_bytes = filetransfer::serialize_file_header(sender.get_header(), sender.get_filename());
+    
+    // Шифруем заголовок
+    randombytes_buf(nonce.data(), nonce.size());
+    std::vector<unsigned char> encrypted_header(header_bytes.size() + crypto_aead_chacha20poly1305_IETF_ABYTES);
+    unsigned long long encrypted_len = 0;
+    
+    crypto_aead_chacha20poly1305_ietf_encrypt(
+        encrypted_header.data(), &encrypted_len,
+        header_bytes.data(), header_bytes.size(),
+        nullptr, 0, nullptr,
+        nonce.data(), tx_key.data());
+    
+    std::vector<unsigned char> packet;
+    packet.insert(packet.end(), nonce.begin(), nonce.end());
+    packet.insert(packet.end(), encrypted_header.begin(), encrypted_header.begin() + encrypted_len);
+    
+    sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+    std::cout << "📤 Заголовок файла отправлен\n";
+    
+    // Небольшая задержка для обработки заголовка
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    // 2. Отправляем чанки
+    uint32_t total_chunks = sender.get_total_chunks();
+    for (uint32_t i = 0; i < total_chunks; i++) {
+        filetransfer::ChunkHeader chunk_header;
+        std::vector<uint8_t> chunk_data;
+        
+        if (!sender.get_chunk(i, chunk_header, chunk_data)) {
+            std::cerr << "❌ Ошибка получения чанка " << i << "\n";
+            return false;
+        }
+        
+        // Сериализуем чанк
+        auto chunk_bytes = filetransfer::serialize_chunk(chunk_header, chunk_data.data());
+        
+        // Шифруем чанк
+        randombytes_buf(nonce.data(), nonce.size());
+        std::vector<unsigned char> encrypted_chunk(chunk_bytes.size() + crypto_aead_chacha20poly1305_IETF_ABYTES);
+        encrypted_len = 0;
+        
+        crypto_aead_chacha20poly1305_ietf_encrypt(
+            encrypted_chunk.data(), &encrypted_len,
+            chunk_bytes.data(), chunk_bytes.size(),
+            nullptr, 0, nullptr,
+            nonce.data(), tx_key.data());
+        
+        packet.clear();
+        packet.insert(packet.end(), nonce.begin(), nonce.end());
+        packet.insert(packet.end(), encrypted_chunk.begin(), encrypted_chunk.begin() + encrypted_len);
+        
+        sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+        
+        // Показываем прогресс
+        float progress = (100.0f * (i + 1)) / total_chunks;
+        std::cout << "📤 Отправлен чанк " << (i + 1) << "/" << total_chunks 
+                  << " (" << std::fixed << std::setprecision(1) << progress << "%)\n";
+        
+        // Небольшая задержка между чанками
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    std::cout << "✅ Все чанки отправлены успешно!\n";
+    return true;
+}
+
+// Функция отправки файла через кодек
+bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::DigitalCodec *codec,
+                     const std::string &file_path)
+{
+    std::cout << "📁 Начинаем отправку файла через кодек: " << file_path << "\n";
+    
+    // Загружаем файл
+    filetransfer::FileSender sender;
+    if (!sender.load_file(file_path)) {
+        return false;
+    }
+    
+    // 1. Отправляем заголовок файла
+    auto header_bytes = filetransfer::serialize_file_header(sender.get_header(), sender.get_filename());
+    std::vector<uint8_t> framed_header = codec->encodeMessage(header_bytes);
+    
+    sendto(sock, framed_header.data(), framed_header.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+    std::cout << "📤 Заголовок файла отправлен через кодек\n";
+    
+    // Небольшая задержка для обработки заголовка
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    // 2. Отправляем чанки
+    uint32_t total_chunks = sender.get_total_chunks();
+    for (uint32_t i = 0; i < total_chunks; i++) {
+        filetransfer::ChunkHeader chunk_header;
+        std::vector<uint8_t> chunk_data;
+        
+        if (!sender.get_chunk(i, chunk_header, chunk_data)) {
+            std::cerr << "❌ Ошибка получения чанка " << i << "\n";
+            return false;
+        }
+        
+        // Сериализуем чанк
+        auto chunk_bytes = filetransfer::serialize_chunk(chunk_header, chunk_data.data());
+        
+        // Кодируем чанк
+        std::vector<uint8_t> framed_chunk = codec->encodeMessage(chunk_bytes);
+        
+        sendto(sock, framed_chunk.data(), framed_chunk.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+        
+        // Показываем прогресс
+        float progress = (100.0f * (i + 1)) / total_chunks;
+        std::cout << "📤 Отправлен чанк " << (i + 1) << "/" << total_chunks 
+                  << " (" << std::fixed << std::setprecision(1) << progress << "%)\n";
+        
+        // Небольшая задержка между чанками
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    std::cout << "✅ Все чанки отправлены успешно через кодек!\n";
+    return true;
+}
+
 int main(int argc, char *argv[])
 {
     bool message_mode = false;
+    bool file_mode = false;
+    std::string file_path;
     // Optional codec parameters
     bool use_codec = false;
     std::string codec_csv;
@@ -135,6 +276,7 @@ int main(int argc, char *argv[])
     {
         std::string arg = argv[i];
         if (arg == "--msg") { message_mode = true; continue; }
+        if (arg == "--file" && i + 1 < argc) { file_mode = true; file_path = argv[++i]; continue; }
         if (arg == "--codec" && i + 1 < argc) { use_codec = true; codec_csv = argv[++i]; continue; }
         if (arg == "--M" && i + 1 < argc) { codec_params.bitsM = std::stoi(argv[++i]); continue; }
         if (arg == "--Q" && i + 1 < argc) { codec_params.bitsQ = std::stoi(argv[++i]); continue; }
@@ -186,9 +328,12 @@ int main(int argc, char *argv[])
     //     std::cout << "✅ IP-адрес " << ip_str << " доступен, начинаем работу...\n";
     // }
 
-    // Открываем tap0
-    int tap_fd = open_tap("tap0");
-    std::cout << "📡 tap0 открыт для чтения Ethernet-кадров\n";
+    // Открываем tap0 только если не режим файлов
+    int tap_fd = -1;
+    if (!file_mode) {
+        tap_fd = open_tap("tap0");
+        std::cout << "📡 tap0 открыт для чтения Ethernet-кадров\n";
+    }
 
     // Создаём UDP-сокет
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -250,8 +395,8 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        // Запускаем приём кадров в отдельном потоке ТОЛЬКО если НЕ режим сообщений
-        if (!message_mode)
+        // Запускаем приём кадров в отдельном потоке ТОЛЬКО если НЕ режим сообщений и НЕ режим файлов
+        if (!message_mode && !file_mode)
         {
             receive_thread = std::thread(receive_frames, tap_fd, sock, std::ref(rx_key));
             std::cout << "🔄 Двунаправленная передача включена\n";
@@ -276,8 +421,8 @@ int main(int argc, char *argv[])
             std::cout << "🎛️  Цифровой кодек включён (M=" << codec_params.bitsM
                       << ", Q=" << codec_params.bitsQ << ", fun=" << codec_params.funType << ")\n";
             
-            // Запускаем приём кадров в отдельном потоке для кодека (если НЕ режим сообщений)
-            if (!message_mode)
+            // Запускаем приём кадров в отдельном потоке для кодека (если НЕ режим сообщений и НЕ режим файлов)
+            if (!message_mode && !file_mode)
             {
                 receive_thread = std::thread(receive_frames_codec, tap_fd, sock, &codec);
                 std::cout << "🔄 Двунаправленная передача включена (кодек)\n";
@@ -288,7 +433,27 @@ int main(int argc, char *argv[])
         }
     }
 
-    if (message_mode)
+    if (file_mode)
+    {
+        // Режим передачи файлов
+        if (use_codec)
+        {
+            if (!send_file_codec(sock, dest_addr, &codec, file_path)) {
+                std::cerr << "❌ Ошибка при отправке файла через кодек\n";
+                close(sock);
+                return 1;
+            }
+        }
+        else
+        {
+            if (!send_file_libsodium(sock, dest_addr, tx_key, file_path)) {
+                std::cerr << "❌ Ошибка при отправке файла через libsodium\n";
+                close(sock);
+                return 1;
+            }
+        }
+    }
+    else if (message_mode)
     {
         // Режим текстовых сообщений
         std::cout << "💬 Режим отправки сообщений. Вводите текст:\n";
@@ -389,7 +554,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    close(tap_fd);
+    if (tap_fd >= 0) {
+        close(tap_fd);
+    }
     close(sock);
     return 0;
 }

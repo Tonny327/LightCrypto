@@ -11,7 +11,10 @@
 #include <sodium.h>
 #include <arpa/inet.h> // для inet_pton
 #include <thread>
+#include <chrono>
+#include <iomanip>
 #include "digital_codec.h"
+#include "file_transfer.h"
 
 constexpr size_t MAX_PACKET_SIZE = 2000;
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
@@ -94,10 +97,157 @@ void send_frames_codec(int tap_fd, int sock, const sockaddr_in &dest_addr, digit
     }
 }
 
+// Функция приема файла через libsodium
+bool receive_file_libsodium(int sock, const std::vector<unsigned char> &rx_key, const std::string &output_path)
+{
+    std::cout << "📥 Ожидание файла через libsodium...\n";
+    
+    filetransfer::FileReceiver receiver;
+    bool header_received = false;
+    std::string filename;
+    
+    while (true) {
+        unsigned char buffer[MAX_PACKET_SIZE];
+        ssize_t nrecv = recv(sock, buffer, sizeof(buffer), 0);
+        
+        if (nrecv <= NONCE_SIZE) {
+            continue;
+        }
+        
+        // Расшифровываем пакет
+        std::vector<unsigned char> nonce(buffer, buffer + NONCE_SIZE);
+        std::vector<unsigned char> ciphertext(buffer + NONCE_SIZE, buffer + nrecv);
+        std::vector<unsigned char> decrypted(ciphertext.size());
+        unsigned long long decrypted_len = 0;
+        
+        int result = crypto_aead_chacha20poly1305_ietf_decrypt(
+            decrypted.data(), &decrypted_len,
+            nullptr,
+            ciphertext.data(), ciphertext.size(),
+            nullptr, 0,
+            nonce.data(), rx_key.data());
+        
+        if (result != 0) {
+            std::cerr << "❌ Ошибка расшифровки пакета\n";
+            continue;
+        }
+        
+        // Проверяем, это заголовок или чанк
+        if (!header_received) {
+            // Пытаемся распарсить как заголовок файла
+            filetransfer::FileHeader header;
+            if (filetransfer::deserialize_file_header(decrypted.data(), decrypted_len, header, filename)) {
+                std::cout << "📥 Получен заголовок файла: " << filename << "\n";
+                receiver.initialize(header, filename);
+                header_received = true;
+                continue;
+            }
+        }
+        
+        // Пытаемся распарсить как чанк
+        filetransfer::ChunkHeader chunk_header;
+        std::vector<uint8_t> chunk_data;
+        
+        if (filetransfer::deserialize_chunk(decrypted.data(), decrypted_len, chunk_header, chunk_data)) {
+            receiver.add_chunk(chunk_header, chunk_data);
+            
+            // Проверяем, все ли чанки получены
+            if (receiver.is_complete()) {
+                std::cout << "✅ Все чанки получены, сохраняем файл...\n";
+                
+                // Формируем путь для сохранения
+                std::string save_path = output_path;
+                if (save_path == "./received_file") {
+                    save_path = "./" + filename;
+                }
+                
+                if (receiver.save_file(save_path)) {
+                    return true;
+                } else {
+                    std::cerr << "❌ Ошибка при сохранении файла\n";
+                    return false;
+                }
+            }
+        }
+    }
+    
+    return false;
+}
+
+// Функция приема файла через кодек
+bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::string &output_path)
+{
+    std::cout << "📥 Ожидание файла через кодек...\n";
+    
+    filetransfer::FileReceiver receiver;
+    bool header_received = false;
+    std::string filename;
+    
+    while (true) {
+        unsigned char buffer[MAX_PACKET_SIZE];
+        ssize_t nrecv = recv(sock, buffer, sizeof(buffer), 0);
+        
+        if (nrecv <= 0) {
+            continue;
+        }
+        
+        // Декодируем пакет
+        std::vector<uint8_t> framed(buffer, buffer + nrecv);
+        std::vector<uint8_t> decoded_bytes = codec->decodeMessage(framed, 0);
+        
+        if (decoded_bytes.empty()) {
+            std::cerr << "❌ Ошибка декодирования пакета\n";
+            continue;
+        }
+        
+        // Проверяем, это заголовок или чанк
+        if (!header_received) {
+            // Пытаемся распарсить как заголовок файла
+            filetransfer::FileHeader header;
+            if (filetransfer::deserialize_file_header(decoded_bytes.data(), decoded_bytes.size(), header, filename)) {
+                std::cout << "📥 Получен заголовок файла через кодек: " << filename << "\n";
+                receiver.initialize(header, filename);
+                header_received = true;
+                continue;
+            }
+        }
+        
+        // Пытаемся распарсить как чанк
+        filetransfer::ChunkHeader chunk_header;
+        std::vector<uint8_t> chunk_data;
+        
+        if (filetransfer::deserialize_chunk(decoded_bytes.data(), decoded_bytes.size(), chunk_header, chunk_data)) {
+            receiver.add_chunk(chunk_header, chunk_data);
+            
+            // Проверяем, все ли чанки получены
+            if (receiver.is_complete()) {
+                std::cout << "✅ Все чанки получены через кодек, сохраняем файл...\n";
+                
+                // Формируем путь для сохранения
+                std::string save_path = output_path;
+                if (save_path == "./received_file") {
+                    save_path = "./" + filename;
+                }
+                
+                if (receiver.save_file(save_path)) {
+                    return true;
+                } else {
+                    std::cerr << "❌ Ошибка при сохранении файла\n";
+                    return false;
+                }
+            }
+        }
+    }
+    
+    return false;
+}
+
 int main(int argc, char *argv[])
 {
     // --msg: если true, тогда мы интерпретируем расшифрованные данные как строку
     bool message_mode = false;
+    bool file_mode = false;
+    std::string output_path = "./received_file";
     bool use_codec = false;
     std::string codec_csv;
     digitalcodec::CodecParams codec_params;
@@ -106,6 +256,8 @@ int main(int argc, char *argv[])
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--msg") { message_mode = true; continue; }
+        if (arg == "--file") { file_mode = true; continue; }
+        if (arg == "--output" && i + 1 < argc) { output_path = argv[++i]; continue; }
         if (arg == "--codec" && i + 1 < argc) { use_codec = true; codec_csv = argv[++i]; continue; }
         if (arg == "--M" && i + 1 < argc) { codec_params.bitsM = std::stoi(argv[++i]); continue; }
         if (arg == "--Q" && i + 1 < argc) { codec_params.bitsQ = std::stoi(argv[++i]); continue; }
@@ -130,8 +282,12 @@ int main(int argc, char *argv[])
 
     std::cout << "🌐 Ожидаем пакеты на IP: " << ip_str << ", порт: " << port << "\n";
 
-    int tap_fd = open_tap("tap1");
-    std::cout << "📡 tap1 открыт для записи расшифрованных Ethernet-кадров\n";
+    // Открываем tap1 только если не режим файлов
+    int tap_fd = -1;
+    if (!file_mode) {
+        tap_fd = open_tap("tap1");
+        std::cout << "📡 tap1 открыт для записи расшифрованных Ethernet-кадров\n";
+    }
 
     // Создаём UDP-сокет
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -204,8 +360,8 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        // Запускаем отправку кадров в отдельном потоке ТОЛЬКО если НЕ режим сообщений
-        if (!message_mode)
+        // Запускаем отправку кадров в отдельном потоке ТОЛЬКО если НЕ режим сообщений и НЕ режим файлов
+        if (!message_mode && !file_mode)
         {
             // Создаём второй сокет для отправки
             int send_sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -244,7 +400,35 @@ int main(int argc, char *argv[])
     // но сначала получим адрес отправителя из первого пакета
     bool send_thread_started = false;
 
-    // Основной цикл приёма
+    // Режим приёма файлов
+    if (file_mode)
+    {
+        if (use_codec)
+        {
+            if (!receive_file_codec(sock, &codec, output_path)) {
+                std::cerr << "❌ Ошибка при приёме файла через кодек\n";
+                close(sock);
+                if (tap_fd >= 0) close(tap_fd);
+                return 1;
+            }
+        }
+        else
+        {
+            if (!receive_file_libsodium(sock, rx_key, output_path)) {
+                std::cerr << "❌ Ошибка при приёме файла через libsodium\n";
+                close(sock);
+                if (tap_fd >= 0) close(tap_fd);
+                return 1;
+            }
+        }
+        
+        // Файл успешно получен, завершаем программу
+        close(sock);
+        if (tap_fd >= 0) close(tap_fd);
+        return 0;
+    }
+
+    // Основной цикл приёма (для режимов сообщений и кадров)
     while (true)
     {
         unsigned char buffer[MAX_PACKET_SIZE];
@@ -257,7 +441,7 @@ int main(int argc, char *argv[])
             continue;
 
         // Запускаем поток отправки после получения первого пакета (для кодека)
-        if (use_codec && !message_mode && !send_thread_started)
+        if (use_codec && !message_mode && !file_mode && !send_thread_started)
         {
             int send_sock = socket(AF_INET, SOCK_DGRAM, 0);
             if (send_sock < 0)
@@ -355,7 +539,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    close(tap_fd);
+    if (tap_fd >= 0) {
+        close(tap_fd);
+    }
     close(sock);
     return 0;
 }

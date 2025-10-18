@@ -19,14 +19,21 @@ add_library(digitalcodec STATIC
 )
 target_include_directories(digitalcodec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# File transfer library
+add_library(filetransfer STATIC
+    src/file_transfer.cpp
+)
+target_include_directories(filetransfer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(filetransfer ${SODIUM_LIBRARIES})
+
 # Компилируем test_speed (без потоков)
 add_executable(lightcrypto src/test_speed.cpp)
 target_link_libraries(lightcrypto ${SODIUM_LIBRARIES})
 
 # Компилируем tap_encrypt (с потоками)
 add_executable(tap_encrypt src/tap_encrypt.cpp)
-target_link_libraries(tap_encrypt ${SODIUM_LIBRARIES} Threads::Threads digitalcodec)
+target_link_libraries(tap_encrypt ${SODIUM_LIBRARIES} Threads::Threads digitalcodec filetransfer)
 
 # Компилируем tap_decrypt (с потоками)
 add_executable(tap_decrypt src/tap_decrypt.cpp)
-target_link_libraries(tap_decrypt ${SODIUM_LIBRARIES} Threads::Threads digitalcodec)
+target_link_libraries(tap_decrypt ${SODIUM_LIBRARIES} Threads::Threads digitalcodec filetransfer)
