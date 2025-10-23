@@ -17,7 +17,7 @@
 #include "file_transfer.h"
 
 
-constexpr size_t MAX_PACKET_SIZE = 8000;  // Увеличено для поддержки Custom Codec (коэффициент расширения ~4x)
+constexpr size_t MAX_PACKET_SIZE = 1600;  // Увеличено для поддержки Custom Codec (коэффициент расширения ~4x)
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
 constexpr size_t NONCE_SIZE = crypto_aead_chacha20poly1305_IETF_NPUBBYTES;
 constexpr size_t HASH_SIZE = crypto_hash_sha256_BYTES;
@@ -136,6 +136,9 @@ bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vect
         return false;
     }
     
+    // Запоминаем время начала передачи
+    auto start_time = std::chrono::high_resolution_clock::now();
+    
     std::vector<unsigned char> nonce(NONCE_SIZE);
     
     // 1. Отправляем заголовок файла
@@ -203,7 +206,18 @@ bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vect
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     
+    // Вычисляем время передачи и скорость
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    double seconds = duration.count() / 1000.0;
+    double file_size_mb = sender.get_header().file_size / (1024.0 * 1024.0);
+    double speed_mbps = (seconds > 0) ? (file_size_mb / seconds) : 0.0;
+    double speed_mbitps = speed_mbps * 8.0; // Конвертируем МБ/сек в Мбит/сек
+    
     std::cout << "✅ Все чанки отправлены успешно!\n";
+    std::cout << "⏱️  Время передачи: " << std::fixed << std::setprecision(2) << seconds << " сек\n";
+    std::cout << "📊 Размер файла: " << std::fixed << std::setprecision(2) << file_size_mb << " МБ\n";
+    std::cout << "🚀 Скорость передачи: " << std::fixed << std::setprecision(2) << speed_mbitps << " Мбит/сек\n";
     return true;
 }
 
@@ -218,6 +232,9 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     if (!sender.load_file(file_path)) {
         return false;
     }
+    
+    // Запоминаем время начала передачи
+    auto start_time = std::chrono::high_resolution_clock::now();
     
     // 0. Синхронизируем состояния кодека с получателем
     std::cout << "🔄 Синхронизация состояний кодека...\n";
@@ -285,8 +302,8 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
         std::vector<uint8_t> framed_chunk = codec->encodeMessage(chunk_bytes);
         
         // DEBUG: Размеры пакетов (раскомментируйте при необходимости)
-         std::cout << "🔍 DEBUG: Чанк " << (i+1) << " - оригинал: " << chunk_bytes.size() 
-                   << " байт, закодирован: " << framed_chunk.size() << " байт\n";
+        // std::cout << "🔍 DEBUG: Чанк " << (i+1) << " - оригинал: " << chunk_bytes.size() 
+        //           << " байт, закодирован: " << framed_chunk.size() << " байт\n";
         
         sendto(sock, framed_chunk.data(), framed_chunk.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
         
@@ -300,7 +317,18 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     
+    // Вычисляем время передачи и скорость
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    double seconds = duration.count() / 1000.0;
+    double file_size_mb = sender.get_header().file_size / (1024.0 * 1024.0);
+    double speed_mbps = (seconds > 0) ? (file_size_mb / seconds) : 0.0;
+    double speed_mbitps = speed_mbps * 8.0; // Конвертируем МБ/сек в Мбит/сек
+    
     std::cout << "✅ Все чанки отправлены успешно через кодек!\n";
+    std::cout << "⏱️  Время передачи: " << std::fixed << std::setprecision(2) << seconds << " сек\n";
+    std::cout << "📊 Размер файла: " << std::fixed << std::setprecision(2) << file_size_mb << " МБ\n";
+    std::cout << "🚀 Скорость передачи: " << std::fixed << std::setprecision(2) << speed_mbitps << " Мбит/сек\n";
     return true;
 }
 

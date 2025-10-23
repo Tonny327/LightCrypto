@@ -104,6 +104,7 @@ bool receive_file_libsodium(int sock, const std::vector<unsigned char> &rx_key, 
     filetransfer::FileReceiver receiver;
     bool header_received = false;
     std::string filename;
+    auto start_time = std::chrono::high_resolution_clock::now();
     
     while (true) {
         unsigned char buffer[MAX_PACKET_SIZE];
@@ -161,6 +162,17 @@ bool receive_file_libsodium(int sock, const std::vector<unsigned char> &rx_key, 
                 }
                 
                 if (receiver.save_file(save_path)) {
+                    // Вычисляем время приема и скорость
+                    auto end_time = std::chrono::high_resolution_clock::now();
+                    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+                    double seconds = duration.count() / 1000.0;
+                    double file_size_mb = receiver.get_file_size() / (1024.0 * 1024.0);
+                    double speed_mbps = (seconds > 0) ? (file_size_mb / seconds) : 0.0;
+                    double speed_mbitps = speed_mbps * 8.0; // Конвертируем МБ/сек в Мбит/сек
+                    
+                    std::cout << "⏱️  Время приема: " << std::fixed << std::setprecision(2) << seconds << " сек\n";
+                    std::cout << "📊 Размер файла: " << std::fixed << std::setprecision(2) << file_size_mb << " МБ\n";
+                    std::cout << "🚀 Скорость приема: " << std::fixed << std::setprecision(2) << speed_mbitps << " Мбит/сек\n";
                     return true;
                 } else {
                     std::cerr << "❌ Ошибка при сохранении файла\n";
@@ -181,6 +193,7 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
     filetransfer::FileReceiver receiver;
     bool header_received = false;
     std::string filename;
+    auto start_time = std::chrono::high_resolution_clock::now();
     
     while (true) {
         unsigned char buffer[MAX_PACKET_SIZE];
@@ -267,6 +280,17 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
                 }
                 
                 if (receiver.save_file(save_path)) {
+                    // Вычисляем время приема и скорость
+                    auto end_time = std::chrono::high_resolution_clock::now();
+                    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+                    double seconds = duration.count() / 1000.0;
+                    double file_size_mb = receiver.get_file_size() / (1024.0 * 1024.0);
+                    double speed_mbps = (seconds > 0) ? (file_size_mb / seconds) : 0.0;
+                    double speed_mbitps = speed_mbps * 8.0; // Конвертируем МБ/сек в Мбит/сек
+                    
+                    std::cout << "⏱️  Время приема: " << std::fixed << std::setprecision(2) << seconds << " сек\n";
+                    std::cout << "📊 Размер файла: " << std::fixed << std::setprecision(2) << file_size_mb << " МБ\n";
+                    std::cout << "🚀 Скорость приема: " << std::fixed << std::setprecision(2) << speed_mbitps << " Мбит/сек\n";
                     return true;
                 } else {
                     std::cerr << "❌ Ошибка при сохранении файла\n";

@@ -41,6 +41,9 @@ class LibSodiumDecryptGUI:
         self.msg_mode_var = tk.BooleanVar(value=config.get_libsodium_msg_mode())
         self.tap_status_var = tk.StringVar(value=STATUS_TAP_NOT_CREATED)
         
+        # IP адрес TAP-B интерфейса
+        self.tap_b_ip_var = tk.StringVar(value="10.0.0.2/24")
+        
         # Режим работы: 'tap', 'msg', 'file'
         self.mode_var = tk.StringVar(value='tap')
         self.output_path_var = tk.StringVar(value='')
@@ -116,6 +119,29 @@ class LibSodiumDecryptGUI:
             cursor='hand2'
         )
         clean_btn.pack(side=tk.LEFT, padx=5)
+        
+        # IP адрес TAP-B
+        ip_frame = tk.Frame(frame, bg=COLOR_PANEL)
+        ip_frame.pack(fill=tk.X, pady=5)
+        
+        ip_label = tk.Label(
+            ip_frame,
+            text="TAP-B IP:",
+            font=FONT_NORMAL,
+            bg=COLOR_PANEL,
+            fg=COLOR_TEXT_PRIMARY,
+            width=15,
+            anchor=tk.W
+        )
+        ip_label.pack(side=tk.LEFT)
+        
+        ip_entry = tk.Entry(
+            ip_frame,
+            textvariable=self.tap_b_ip_var,
+            font=FONT_NORMAL,
+            width=15
+        )
+        ip_entry.pack(side=tk.LEFT, padx=5)
         
         # Статус
         status_label = tk.Label(
@@ -352,7 +378,7 @@ class LibSodiumDecryptGUI:
             font=FONT_BUTTON,
             bg=COLOR_DECRYPT,
             fg='white',
-            command=lambda: self._run_service("iperf -s -B 10.0.0.2"),
+            command=lambda: self._run_service(f"iperf -s -B {self._get_tap_b_ip()}"),
             cursor='hand2'
         )
         iperf_tcp_srv_btn.pack(side=tk.LEFT, padx=5)
@@ -363,7 +389,7 @@ class LibSodiumDecryptGUI:
             font=FONT_BUTTON,
             bg=COLOR_DECRYPT,
             fg='white',
-            command=lambda: self._run_service("iperf -s -u -B 10.0.0.2"),
+            command=lambda: self._run_service(f"iperf -s -u -B {self._get_tap_b_ip()}"),
             cursor='hand2'
         )
         iperf_udp_srv_btn.pack(side=tk.LEFT, padx=5)
@@ -429,8 +455,9 @@ class LibSodiumDecryptGUI:
         self.terminal.print_to_terminal(f"{EMOJI_SETTINGS} Создание {TAP_NAMES['decrypt']}...", 'info')
         
         try:
+            tap_b_ip = self.tap_b_ip_var.get().strip()
             result = subprocess.run(
-                ['sudo', 'bash', SETUP_TAP_B],
+                ['sudo', 'bash', SETUP_TAP_B, tap_b_ip],
                 capture_output=True,
                 text=True,
                 timeout=10
@@ -600,6 +627,14 @@ class LibSodiumDecryptGUI:
                 f"{EMOJI_FILE} Путь сохранения: {os.path.basename(filepath)}",
                 'success'
             )
+    
+    def _get_tap_b_ip(self):
+        """Получить IP адрес TAP-B (без маски)"""
+        tap_b_ip = self.tap_b_ip_var.get().strip()
+        # Убираем маску если есть
+        if '/' in tap_b_ip:
+            return tap_b_ip.split('/')[0]
+        return tap_b_ip
     
     def _run_service(self, command: str):
         """Запуск сервиса в отдельном терминале"""

@@ -41,6 +41,9 @@ class LibSodiumEncryptGUI:
         self.port_var = tk.StringVar(value=str(config.get_libsodium_port()))
         self.tap_status_var = tk.StringVar(value=STATUS_TAP_NOT_CREATED)
         
+        # IP адрес TAP-A интерфейса
+        self.tap_a_ip_var = tk.StringVar(value="10.0.0.1/24")
+        
         # Режим работы: 'tap', 'msg', 'file'
         self.mode_var = tk.StringVar(value='tap')
         self.file_path_var = tk.StringVar(value='')
@@ -116,6 +119,29 @@ class LibSodiumEncryptGUI:
             cursor='hand2'
         )
         clean_btn.pack(side=tk.LEFT, padx=5)
+        
+        # IP адрес TAP-A
+        ip_frame = tk.Frame(frame, bg=COLOR_PANEL)
+        ip_frame.pack(fill=tk.X, pady=5)
+        
+        ip_label = tk.Label(
+            ip_frame,
+            text="TAP-A IP:",
+            font=FONT_NORMAL,
+            bg=COLOR_PANEL,
+            fg=COLOR_TEXT_PRIMARY,
+            width=15,
+            anchor=tk.W
+        )
+        ip_label.pack(side=tk.LEFT)
+        
+        ip_entry = tk.Entry(
+            ip_frame,
+            textvariable=self.tap_a_ip_var,
+            font=FONT_NORMAL,
+            width=15
+        )
+        ip_entry.pack(side=tk.LEFT, padx=5)
         
         # Статус
         status_label = tk.Label(
@@ -339,11 +365,11 @@ class LibSodiumEncryptGUI:
         
         self.ping_btn = tk.Button(
             row1,
-            text=f"{EMOJI_PING} ping 10.0.0.2",
+            text=f"{EMOJI_PING} ping",
             font=FONT_BUTTON,
             bg=COLOR_INFO,
             fg='white',
-            command=lambda: self._run_test_util("ping 10.0.0.2"),
+            command=lambda: self._run_test_util(f"ping {self._get_tap_b_ip()}"),
             cursor='hand2'
         )
         self.ping_btn.pack(side=tk.LEFT, padx=5)
@@ -354,7 +380,7 @@ class LibSodiumEncryptGUI:
             font=FONT_BUTTON,
             bg=COLOR_INFO,
             fg='white',
-            command=lambda: self._run_test_util("iperf -c 10.0.0.2 -t 10"),
+            command=lambda: self._run_test_util(f"iperf -c {self._get_tap_b_ip()} -t 10"),
             cursor='hand2'
         )
         self.iperf_tcp_btn.pack(side=tk.LEFT, padx=5)
@@ -365,7 +391,7 @@ class LibSodiumEncryptGUI:
             font=FONT_BUTTON,
             bg=COLOR_INFO,
             fg='white',
-            command=lambda: self._run_test_util("iperf -c 10.0.0.2 -u -t 10 -b 100M"),
+            command=lambda: self._run_test_util(f"iperf -c {self._get_tap_b_ip()} -u -t 10 -b 100M"),
             cursor='hand2'
         )
         self.iperf_udp_btn.pack(side=tk.LEFT, padx=5)
@@ -380,7 +406,7 @@ class LibSodiumEncryptGUI:
             font=FONT_BUTTON,
             bg=COLOR_INFO,
             fg='white',
-            command=lambda: self._run_test_util("hping3 10.0.0.2 -S -p 80 -c 10"),
+            command=lambda: self._run_test_util(f"sudo hping3 {self._get_tap_b_ip()} -S -p 80 -c 10"),
             cursor='hand2'
         )
         self.hping_syn_btn.pack(side=tk.LEFT, padx=5)
@@ -391,7 +417,7 @@ class LibSodiumEncryptGUI:
             font=FONT_BUTTON,
             bg=COLOR_INFO,
             fg='white',
-            command=lambda: self._run_test_util("hping3 10.0.0.2 -2 -p 5000 -c 10"),
+            command=lambda: self._run_test_util(f"sudo hping3 {self._get_tap_b_ip()} -2 -p 5000 -c 10"),
             cursor='hand2'
         )
         self.hping_udp_btn.pack(side=tk.LEFT, padx=5)
@@ -452,8 +478,9 @@ class LibSodiumEncryptGUI:
         self.terminal.print_to_terminal(f"{EMOJI_SETTINGS} Создание {TAP_NAMES['encrypt']}...", 'info')
         
         try:
+            tap_a_ip = self.tap_a_ip_var.get().strip()
             result = subprocess.run(
-                ['sudo', 'bash', SETUP_TAP_A],
+                ['sudo', 'bash', SETUP_TAP_A, tap_a_ip],
                 capture_output=True,
                 text=True,
                 timeout=10
@@ -643,6 +670,11 @@ class LibSodiumEncryptGUI:
                 f"{EMOJI_FILE} Выбран файл: {os.path.basename(filepath)}",
                 'success'
             )
+    
+    def _get_tap_b_ip(self):
+        """Получить IP адрес TAP-B (без маски)"""
+        # Используем фиксированный IP для TAP-B
+        return "10.0.0.2"
     
     def _run_test_util(self, command: str):
         """Запуск тестовой утилиты в отдельном терминале"""

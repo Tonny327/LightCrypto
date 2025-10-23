@@ -16,7 +16,7 @@ constexpr uint32_t MAGIC_FILE_CHUNK = 0x43484E4B;   // "CHNK"
 constexpr uint32_t MAGIC_FILE_ACK = 0x41434B00;     // "ACK\0"
 
 // Размер чанка данных (без заголовков)
-constexpr size_t CHUNK_DATA_SIZE = 1400;  // Оставляем место для заголовков и шифрования
+constexpr size_t CHUNK_DATA_SIZE = 3000;  // Оставляем место для заголовков и шифрования
 
 // Максимальное количество попыток передачи
 constexpr int MAX_RETRIES = 3;
@@ -137,6 +137,9 @@ public:
     
     // Получить общее количество чанков
     uint32_t get_total_chunks() const { return header_.total_chunks; }
+    
+    // Получить размер файла в байтах
+    uint32_t get_file_size() const { return header_.file_size; }
     
     // Сохранить файл на диск
     bool save_file(const std::string& output_path);
