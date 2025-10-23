@@ -2,6 +2,7 @@
 #include <fstream>
 #include <cstring>
 #include <iostream>
+#include <iomanip>
 #include <sodium.h>
 
 namespace filetransfer {
@@ -250,7 +251,8 @@ bool FileReceiver::add_chunk(const ChunkHeader& chunk_header, const std::vector<
     received_count_++;
     
     std::cout << "✅ Получен чанк " << chunk_header.chunk_index + 1 << "/" 
-              << header_.total_chunks << " (" << get_progress() << "%)\n";
+              << header_.total_chunks << " (" << chunk_header.data_size << " байт, "
+              << std::fixed << std::setprecision(1) << get_progress() << "%)\n";
     
     return true;
 }

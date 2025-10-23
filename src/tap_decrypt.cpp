@@ -1,4 +1,5 @@
 #include <iostream>
+#include <iomanip>
 #include <vector>
 #include <cstring>
 #include <fcntl.h>
@@ -11,12 +12,10 @@
 #include <sodium.h>
 #include <arpa/inet.h> // для inet_pton
 #include <thread>
-#include <chrono>
-#include <iomanip>
 #include "digital_codec.h"
 #include "file_transfer.h"
 
-constexpr size_t MAX_PACKET_SIZE = 2000;
+constexpr size_t MAX_PACKET_SIZE = 8000;  // Увеличено для поддержки Custom Codec (коэффициент расширения ~4x)
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
 constexpr size_t NONCE_SIZE = crypto_aead_chacha20poly1305_IETF_NPUBBYTES;
 constexpr size_t HASH_SIZE = crypto_hash_sha256_BYTES;
@@ -191,14 +190,38 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
             continue;
         }
         
+        // Проверяем, это пакет синхронизации состояний?
+        if (nrecv >= 12 && buffer[0] == 0xFF && buffer[1] == 0xFE && 
+            buffer[2] == 0xFD && buffer[3] == 0xFC) {
+            // Это пакет синхронизации состояний
+            int32_t h1 = buffer[4] | (buffer[5] << 8) | (buffer[6] << 16) | (buffer[7] << 24);
+            int32_t h2 = buffer[8] | (buffer[9] << 8) | (buffer[10] << 16) | (buffer[11] << 24);
+            
+            // Синхронизируем состояния кодека
+            codec->syncStates(h1, h2);
+            std::cout << "✅ Состояния кодека синхронизированы: h1=" << h1 << ", h2=" << h2 << "\n";
+            std::cout << "🔍 Размер полученного пакета: " << nrecv << " байт\n";
+            continue;
+        }
+        
+        // ВАЖНО: Сбрасываем состояния кодека перед декодированием каждого пакета
+        // Это должно соответствовать сбросу на отправителе
+        codec->reset();
+        
+        // DEBUG: Размеры пакетов (раскомментируйте при необходимости)
+        // std::cout << "🔍 DEBUG: Получен пакет размером " << nrecv << " байт (до декодирования)\n";
+        
         // Декодируем пакет
         std::vector<uint8_t> framed(buffer, buffer + nrecv);
         std::vector<uint8_t> decoded_bytes = codec->decodeMessage(framed, 0);
         
         if (decoded_bytes.empty()) {
-            std::cerr << "❌ Ошибка декодирования пакета\n";
+            std::cerr << "❌ Ошибка декодирования пакета (размер: " << nrecv << " байт)\n";
             continue;
         }
+        
+        // DEBUG: Размеры пакетов (раскомментируйте при необходимости)
+        // std::cout << "🔍 DEBUG: Декодирован в " << decoded_bytes.size() << " байт (после декодирования)\n";
         
         // Проверяем, это заголовок или чанк
         if (!header_received) {
@@ -209,6 +232,9 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
                 receiver.initialize(header, filename);
                 header_received = true;
                 continue;
+            } else {
+                // DEBUG: Парсинг заголовков (раскомментируйте при необходимости)
+                // std::cerr << "⚠️  Не удалось распарсить заголовок\n";
             }
         }
         
@@ -216,8 +242,19 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
         filetransfer::ChunkHeader chunk_header;
         std::vector<uint8_t> chunk_data;
         
+        // DEBUG: Парсинг чанков (раскомментируйте при необходимости)
+        // std::cout << "🔍 Пытаемся распарсить как чанк (размер: " << decoded_bytes.size() << " байт)...\n";
+        
         if (filetransfer::deserialize_chunk(decoded_bytes.data(), decoded_bytes.size(), chunk_header, chunk_data)) {
             receiver.add_chunk(chunk_header, chunk_data);
+            
+            // Показываем прогресс получения
+            uint32_t total_chunks = receiver.get_total_chunks();
+            uint32_t received_count = receiver.get_received_count();
+            float progress = (100.0f * received_count) / total_chunks;
+            std::cout << "📥 Получен чанк " << received_count << "/" << total_chunks 
+                      << " (" << chunk_header.data_size << " байт, "
+                      << std::fixed << std::setprecision(1) << progress << "%)\n";
             
             // Проверяем, все ли чанки получены
             if (receiver.is_complete()) {
@@ -236,6 +273,9 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
                     return false;
                 }
             }
+        } else {
+            // DEBUG: Ошибки парсинга (раскомментируйте при необходимости)
+            // std::cerr << "⚠️  Не удалось распарсить пакет как чанк (размер: " << decoded_bytes.size() << " байт)\n";
         }
     }
     
@@ -387,7 +427,7 @@ int main(int argc, char *argv[])
                 return 1;
             }
             codec.loadCoefficientsCSV(codec_csv);
-            codec.reset();
+            codec.reset(); // Восстанавливаем сброс состояний для правильной инициализации
             std::cout << "🎛️  Цифровой кодек включён (M=" << codec_params.bitsM
                       << ", Q=" << codec_params.bitsQ << ", fun=" << codec_params.funType << ")\n";
         } catch (const std::exception &e) {

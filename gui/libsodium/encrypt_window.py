@@ -39,8 +39,11 @@ class LibSodiumEncryptGUI:
         # Переменные
         self.ip_var = tk.StringVar(value=config.get_libsodium_encrypt_ip())
         self.port_var = tk.StringVar(value=str(config.get_libsodium_port()))
-        self.msg_mode_var = tk.BooleanVar(value=config.get_libsodium_msg_mode())
         self.tap_status_var = tk.StringVar(value=STATUS_TAP_NOT_CREATED)
+        
+        # Режим работы: 'tap', 'msg', 'file'
+        self.mode_var = tk.StringVar(value='tap')
+        self.file_path_var = tk.StringVar(value='')
         
         self._create_widgets()
         self._update_tap_status()
@@ -137,6 +140,101 @@ class LibSodiumEncryptGUI:
         )
         frame.pack(fill=tk.X, padx=PADDING_SECTION, pady=PADDING_SECTION)
         
+        # Выбор режима работы
+        mode_frame = tk.LabelFrame(
+            frame,
+            text="Режим работы",
+            font=FONT_NORMAL,
+            bg=COLOR_PANEL,
+            fg=COLOR_TEXT_PRIMARY,
+            padx=5,
+            pady=5
+        )
+        mode_frame.pack(fill=tk.X, pady=5)
+        
+        tap_radio = tk.Radiobutton(
+            mode_frame,
+            text="🔀 Ethernet кадры (TAP)",
+            variable=self.mode_var,
+            value='tap',
+            font=FONT_NORMAL,
+            bg=COLOR_PANEL,
+            fg=COLOR_TEXT_PRIMARY,
+            activebackground=COLOR_PANEL,
+            selectcolor=COLOR_PANEL,
+            command=self._on_mode_changed
+        )
+        tap_radio.pack(anchor=tk.W)
+        
+        msg_radio = tk.Radiobutton(
+            mode_frame,
+            text="💬 Текстовые сообщения (--msg)",
+            variable=self.mode_var,
+            value='msg',
+            font=FONT_NORMAL,
+            bg=COLOR_PANEL,
+            fg=COLOR_TEXT_PRIMARY,
+            activebackground=COLOR_PANEL,
+            selectcolor=COLOR_PANEL,
+            command=self._on_mode_changed
+        )
+        msg_radio.pack(anchor=tk.W)
+        self._create_tooltip(msg_radio, TOOLTIP_MSG_MODE)
+        
+        file_radio = tk.Radiobutton(
+            mode_frame,
+            text=f"{EMOJI_FILE} Отправка файлов (--file)",
+            variable=self.mode_var,
+            value='file',
+            font=FONT_NORMAL,
+            bg=COLOR_PANEL,
+            fg=COLOR_TEXT_PRIMARY,
+            activebackground=COLOR_PANEL,
+            selectcolor=COLOR_PANEL,
+            command=self._on_mode_changed
+        )
+        file_radio.pack(anchor=tk.W)
+        self._create_tooltip(file_radio, TOOLTIP_FILE_SELECT)
+        
+        # Панель выбора файла для отправки (показывается только в режиме file)
+        self.file_input_frame = tk.Frame(frame, bg=COLOR_PANEL)
+        
+        file_label = tk.Label(
+            self.file_input_frame,
+            text="Файл для отправки:",
+            font=FONT_NORMAL,
+            bg=COLOR_PANEL,
+            fg=COLOR_TEXT_PRIMARY,
+            anchor=tk.W
+        )
+        file_label.pack(fill=tk.X, pady=(5, 0))
+        
+        file_entry_frame = tk.Frame(self.file_input_frame, bg=COLOR_PANEL)
+        file_entry_frame.pack(fill=tk.X, pady=2)
+        
+        self.file_entry = tk.Entry(
+            file_entry_frame,
+            textvariable=self.file_path_var,
+            font=FONT_NORMAL
+        )
+        self.file_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        
+        self.file_browse_btn = tk.Button(
+            file_entry_frame,
+            text=f"{EMOJI_FOLDER} Выбрать",
+            font=FONT_BUTTON,
+            bg=COLOR_INFO,
+            fg='white',
+            command=self._browse_file,
+            cursor='hand2'
+        )
+        self.file_browse_btn.pack(side=tk.RIGHT)
+        self._create_tooltip(self.file_entry, TOOLTIP_FILE_SELECT)
+        
+        # Разделитель
+        separator1 = ttk.Separator(frame, orient='horizontal')
+        separator1.pack(fill=tk.X, pady=8)
+        
         # IP-адрес
         ip_frame = tk.Frame(frame, bg=COLOR_PANEL)
         ip_frame.pack(fill=tk.X, pady=5)
@@ -188,25 +286,9 @@ class LibSodiumEncryptGUI:
         
         self._create_tooltip(port_entry, TOOLTIP_PORT)
         
-        # Режим сообщений
-        msg_check = tk.Checkbutton(
-            frame,
-            text="☐ Режим сообщений (--msg)",
-            variable=self.msg_mode_var,
-            font=FONT_NORMAL,
-            bg=COLOR_PANEL,
-            fg=COLOR_TEXT_PRIMARY,
-            activebackground=COLOR_PANEL,
-            selectcolor=COLOR_PANEL,
-            command=self._on_msg_mode_changed
-        )
-        msg_check.pack(anchor=tk.W, pady=5)
-        
-        self._create_tooltip(msg_check, TOOLTIP_MSG_MODE)
-        
         # Разделитель
-        separator = ttk.Separator(frame, orient='horizontal')
-        separator.pack(fill=tk.X, pady=8)
+        separator2 = ttk.Separator(frame, orient='horizontal')
+        separator2.pack(fill=tk.X, pady=8)
         
         # Кнопка запуска/остановки (компактная)
         self.start_button = tk.Button(
@@ -219,6 +301,9 @@ class LibSodiumEncryptGUI:
             cursor='hand2'
         )
         self.start_button.pack(fill=tk.X, pady=5)
+        
+        # Инициализация видимости элементов
+        self._on_mode_changed()
     
     def _create_terminal_panel(self, parent):
         """Встроенный терминал"""
@@ -425,6 +510,7 @@ class LibSodiumEncryptGUI:
         # Валидация
         ip = self.ip_var.get().strip()
         port_str = self.port_var.get().strip()
+        mode = self.mode_var.get()
         
         if not validate_ip(ip):
             messagebox.showerror("Ошибка", "Некорректный IP-адрес!")
@@ -438,17 +524,32 @@ class LibSodiumEncryptGUI:
             messagebox.showerror("Ошибка", f"Некорректный порт! Допустимый диапазон: {PORT_MIN}-{PORT_MAX}")
             return
         
+        # Валидация для режима файлов
+        if mode == 'file':
+            file_path = self.file_path_var.get().strip()
+            if not file_path:
+                messagebox.showerror("Ошибка", "Выберите файл для отправки!")
+                return
+            
+            import os
+            if not os.path.isfile(file_path):
+                messagebox.showerror("Ошибка", f"Файл не найден: {file_path}")
+                return
+        
         # Сохранение параметров
         self.config.set_libsodium_encrypt_ip(ip)
         self.config.set_libsodium_port(port)
-        self.config.set_libsodium_msg_mode(self.msg_mode_var.get())
+        self.config.set_libsodium_msg_mode(mode == 'msg')
         self.config.save()
         
         # Формирование команды
         cmd = ['sudo', TAP_ENCRYPT]
         
-        if self.msg_mode_var.get():
+        if mode == 'msg':
             cmd.append('--msg')
+        elif mode == 'file':
+            cmd.append('--file')
+            cmd.append(self.file_path_var.get())
         
         cmd.append(ip)
         cmd.append(str(port))
@@ -457,7 +558,7 @@ class LibSodiumEncryptGUI:
         self.terminal.run_process(cmd, use_xterm=False)
         
         # Показать поле ввода если режим сообщений
-        if self.msg_mode_var.get():
+        if mode == 'msg':
             self.terminal.show_input_field(True)
         
         # Обновление кнопки
@@ -479,20 +580,68 @@ class LibSodiumEncryptGUI:
             bg=COLOR_SUCCESS
         )
     
-    def _on_msg_mode_changed(self):
-        """Обработка изменения режима сообщений"""
-        is_msg_mode = self.msg_mode_var.get()
+    def _on_mode_changed(self):
+        """Обработка изменения режима работы"""
+        mode = self.mode_var.get()
         
-        # Блокировка кнопок тестовых утилит
-        state = tk.DISABLED if is_msg_mode else tk.NORMAL
+        # Показать/скрыть панель выбора файла
+        if mode == 'file':
+            self.file_input_frame.pack(fill=tk.X, pady=5, after=self.file_input_frame.master.winfo_children()[0])
+        else:
+            self.file_input_frame.pack_forget()
         
-        for btn in self.test_buttons:
-            btn.config(state=state)
+        # Блокировка кнопок тестовых утилит (только в режиме TAP)
+        if hasattr(self, 'test_buttons'):
+            state = tk.NORMAL if mode == 'tap' else tk.DISABLED
+            
+            for btn in self.test_buttons:
+                btn.config(state=state)
         
-        if is_msg_mode:
+        # Информационные сообщения (только если терминал уже создан)
+        if hasattr(self, 'terminal') and self.terminal:
+            if mode == 'msg':
+                self.terminal.print_to_terminal(
+                    f"{EMOJI_INFO} Режим сообщений включен. Тестовые утилиты отключены.",
+                    'info'
+                )
+            elif mode == 'file':
+                self.terminal.print_to_terminal(
+                    f"{EMOJI_INFO} Режим отправки файлов включен.",
+                    'info'
+                )
+            elif mode == 'tap':
+                self.terminal.print_to_terminal(
+                    f"{EMOJI_INFO} Режим Ethernet-кадров активен.",
+                    'info'
+                )
+    
+    def _browse_file(self):
+        """Выбор файла для отправки"""
+        from tkinter import filedialog
+        
+        initial_dir = self.config.get_last_file_dir() if hasattr(self.config, 'get_last_file_dir') else os.path.expanduser('~')
+        
+        filepath = filedialog.askopenfilename(
+            title="Выберите файл для отправки",
+            initialdir=initial_dir,
+            filetypes=[
+                ("Все файлы", "*.*"),
+                ("Изображения", "*.png *.jpg *.jpeg *.gif *.bmp"),
+                ("Документы", "*.pdf *.doc *.docx *.txt"),
+                ("Архивы", "*.zip *.rar *.7z *.tar *.gz"),
+            ]
+        )
+        
+        if filepath:
+            self.file_path_var.set(filepath)
+            # Сохранить директорию
+            if hasattr(self.config, 'set_last_file_dir'):
+                self.config.set_last_file_dir(os.path.dirname(filepath))
+                self.config.save()
+            
             self.terminal.print_to_terminal(
-                f"{EMOJI_INFO} Режим сообщений включен. Тестовые утилиты отключены.",
-                'info'
+                f"{EMOJI_FILE} Выбран файл: {os.path.basename(filepath)}",
+                'success'
             )
     
     def _run_test_util(self, command: str):

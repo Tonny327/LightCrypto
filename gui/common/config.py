@@ -208,4 +208,22 @@ class ConfigManager:
     def set_custom_auto_q(self, enabled: bool):
         """Сохранить состояние чекбокса 'Авто из CSV'"""
         self.set('custom_auto_q', enabled)
+    
+    # === Методы для файлового режима ===
+    
+    def get_last_file_dir(self) -> str:
+        """Получить последнюю директорию выбора файла"""
+        return self.get('last_file_dir', os.path.expanduser('~'))
+    
+    def set_last_file_dir(self, directory: str):
+        """Сохранить последнюю директорию выбора файла"""
+        self.set('last_file_dir', directory)
+    
+    def get_last_output_dir(self) -> str:
+        """Получить последнюю директорию сохранения файла"""
+        return self.get('last_output_dir', os.path.expanduser('~'))
+    
+    def set_last_output_dir(self, directory: str):
+        """Сохранить последнюю директорию сохранения файла"""
+        self.set('last_output_dir', directory)
 

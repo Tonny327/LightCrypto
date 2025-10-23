@@ -36,6 +36,10 @@ public:
     // Reset internal generator states
     void reset();
     void syncStates(int32_t h1, int32_t h2);
+    
+    // Get current encoder states
+    int32_t get_enc_h1() const { return enc_h1_; }
+    int32_t get_enc_h2() const { return enc_h2_; }
 
     // Encode raw bytes into coded bytes using the digital coding scheme.
     // Supports any M up to 31. Each state is serialized using bytesPerSymbol() bytes.

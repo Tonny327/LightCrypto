@@ -81,6 +81,10 @@ void DigitalCodec::reset() {
     enc_h2_ = wrapM(params_.h2);
     dec_h1_ = enc_h1_;
     dec_h2_ = enc_h2_;
+    // Отладочный вывод закомментирован для чистого вывода (как в LibSodium)
+    // std::cout << "🔄 Состояния кодека инициализированы: enc_h1_=" << enc_h1_ 
+    //           << ", enc_h2_=" << enc_h2_ << ", dec_h1_=" << dec_h1_ 
+    //           << ", dec_h2_=" << dec_h2_ << std::endl;
 }
 
 void DigitalCodec::syncStates(int32_t h1, int32_t h2) {
@@ -88,6 +92,10 @@ void DigitalCodec::syncStates(int32_t h1, int32_t h2) {
     enc_h2_ = wrapM(h2);
     dec_h1_ = enc_h1_;
     dec_h2_ = enc_h2_;
+    // Отладочный вывод закомментирован для чистого вывода (как в LibSodium)
+    // std::cout << "🔄 Состояния синхронизированы: enc_h1_=" << enc_h1_ 
+    //           << ", enc_h2_=" << enc_h2_ << ", dec_h1_=" << dec_h1_ 
+    //           << ", dec_h2_=" << dec_h2_ << std::endl;
 }
 
 int32_t DigitalCodec::wrapM(int64_t v) const {
@@ -467,7 +475,14 @@ std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &cod
                 dec_h2_ = dec_h1_;
                 dec_h1_ = next;
                 // НЕ добавляем в out - это реализация пропуска символа
-                std::cerr << "⚠️  Пропущен символ при декодировании (не найдено совпадение)\n";
+                std::cerr << "⚠️  Пропущен символ при декодировании (не найдено совпадение)";
+                std::cerr << " [observed=" << observed << ", x=" << x << ", y=" << y << "]";
+                std::cerr << " [RR=";
+                for (int ff = 0; ff < funCount; ++ff) {
+                    std::cerr << RR[ff];
+                    if (ff < funCount - 1) std::cerr << ",";
+                }
+                std::cerr << "]\n";
             }
         }
     }

@@ -17,7 +17,7 @@
 #include "file_transfer.h"
 
 
-constexpr size_t MAX_PACKET_SIZE = 2000;
+constexpr size_t MAX_PACKET_SIZE = 8000;  // Увеличено для поддержки Custom Codec (коэффициент расширения ~4x)
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
 constexpr size_t NONCE_SIZE = crypto_aead_chacha20poly1305_IETF_NPUBBYTES;
 constexpr size_t HASH_SIZE = crypto_hash_sha256_BYTES;
@@ -196,7 +196,8 @@ bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vect
         // Показываем прогресс
         float progress = (100.0f * (i + 1)) / total_chunks;
         std::cout << "📤 Отправлен чанк " << (i + 1) << "/" << total_chunks 
-                  << " (" << std::fixed << std::setprecision(1) << progress << "%)\n";
+                  << " (" << chunk_header.data_size << " байт, "
+                  << std::fixed << std::setprecision(1) << progress << "%)\n";
         
         // Небольшая задержка между чанками
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -217,6 +218,40 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     if (!sender.load_file(file_path)) {
         return false;
     }
+    
+    // 0. Синхронизируем состояния кодека с получателем
+    std::cout << "🔄 Синхронизация состояний кодека...\n";
+    
+    // Отправляем специальный пакет синхронизации состояний
+    std::vector<uint8_t> sync_packet;
+    sync_packet.push_back(0xFF); // Маркер синхронизации
+    sync_packet.push_back(0xFE);
+    sync_packet.push_back(0xFD);
+    sync_packet.push_back(0xFC);
+    
+    // Добавляем текущие состояния кодека (4 байта каждое)
+    int32_t h1 = codec->get_enc_h1();
+    int32_t h2 = codec->get_enc_h2();
+    sync_packet.push_back(h1 & 0xFF);
+    sync_packet.push_back((h1 >> 8) & 0xFF);
+    sync_packet.push_back((h1 >> 16) & 0xFF);
+    sync_packet.push_back((h1 >> 24) & 0xFF);
+    sync_packet.push_back(h2 & 0xFF);
+    sync_packet.push_back((h2 >> 8) & 0xFF);
+    sync_packet.push_back((h2 >> 16) & 0xFF);
+    sync_packet.push_back((h2 >> 24) & 0xFF);
+    
+    // Отправляем пакет синхронизации
+    if (sendto(sock, sync_packet.data(), sync_packet.size(), 0, 
+              (sockaddr *)&dest_addr, sizeof(dest_addr)) < 0) {
+        std::cerr << "❌ Ошибка отправки синхронизации: " << strerror(errno) << "\n";
+        return false;
+    }
+    std::cout << "✅ Состояния кодека отправлены: h1=" << h1 << ", h2=" << h2 << "\n";
+    std::cout << "🔍 Размер пакета синхронизации: " << sync_packet.size() << " байт\n";
+    
+    // Ждем обработки синхронизации
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
     
     // 1. Отправляем заголовок файла
     auto header_bytes = filetransfer::serialize_file_header(sender.get_header(), sender.get_filename());
@@ -242,15 +277,24 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
         // Сериализуем чанк
         auto chunk_bytes = filetransfer::serialize_chunk(chunk_header, chunk_data.data());
         
+        // ВАЖНО: Сбрасываем состояния кодека перед каждым чанком
+        // Это делает каждый чанк независимым и предотвращает накопление ошибок
+        codec->reset();
+        
         // Кодируем чанк
         std::vector<uint8_t> framed_chunk = codec->encodeMessage(chunk_bytes);
+        
+        // DEBUG: Размеры пакетов (раскомментируйте при необходимости)
+         std::cout << "🔍 DEBUG: Чанк " << (i+1) << " - оригинал: " << chunk_bytes.size() 
+                   << " байт, закодирован: " << framed_chunk.size() << " байт\n";
         
         sendto(sock, framed_chunk.data(), framed_chunk.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
         
         // Показываем прогресс
         float progress = (100.0f * (i + 1)) / total_chunks;
         std::cout << "📤 Отправлен чанк " << (i + 1) << "/" << total_chunks 
-                  << " (" << std::fixed << std::setprecision(1) << progress << "%)\n";
+                  << " (" << chunk_header.data_size << " байт, "
+                  << std::fixed << std::setprecision(1) << progress << "%)\n";
         
         // Небольшая задержка между чанками
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -417,7 +461,7 @@ int main(int argc, char *argv[])
                 return 1;
             }
             codec.loadCoefficientsCSV(codec_csv);
-            codec.reset();
+            codec.reset(); // Восстанавливаем сброс состояний для правильной инициализации
             std::cout << "🎛️  Цифровой кодек включён (M=" << codec_params.bitsM
                       << ", Q=" << codec_params.bitsQ << ", fun=" << codec_params.funType << ")\n";
             

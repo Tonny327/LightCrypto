@@ -76,6 +76,7 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
         # Валидация сети
         ip = self.ip_var.get().strip()
         port_str = self.port_var.get().strip()
+        mode = self.mode_var.get()
         
         if not validate_ip(ip):
             messagebox.showerror("Ошибка", "Некорректный IP-адрес!")
@@ -89,6 +90,18 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
             messagebox.showerror("Ошибка", f"Некорректный порт! Допустимый диапазон: {PORT_MIN}-{PORT_MAX}")
             return
         
+        # Валидация для режима файлов
+        if mode == 'file':
+            file_path = self.file_path_var.get().strip()
+            if not file_path:
+                messagebox.showerror("Ошибка", "Выберите файл для отправки!")
+                return
+            
+            import os
+            if not os.path.isfile(file_path):
+                messagebox.showerror("Ошибка", f"Файл не найден: {file_path}")
+                return
+        
         # Получение параметров кодека
         params = self.codec_panel.get_params()
         
@@ -99,7 +112,7 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
         # Сохранение параметров
         self.config.set_custom_encrypt_ip(ip)
         self.config.set_custom_port(port)
-        self.config.set_custom_msg_mode(self.msg_mode_var.get())
+        self.config.set_custom_msg_mode(mode == 'msg')
         self.codec_panel.save_to_config()
         self.config.save()
         
@@ -114,8 +127,11 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
             '--h2', str(params['h2'])
         ]
         
-        if self.msg_mode_var.get():
+        if mode == 'msg':
             cmd.append('--msg')
+        elif mode == 'file':
+            cmd.append('--file')
+            cmd.append(self.file_path_var.get())
         
         cmd.append(ip)
         cmd.append(str(port))
@@ -128,10 +144,11 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
         )
         
         # Запуск
+        # Используем стандартный метод terminal.run_process для всех режимов
         self.terminal.run_process(cmd, use_xterm=False)
         
         # Показать поле ввода если режим сообщений
-        if self.msg_mode_var.get():
+        if mode == 'msg':
             self.terminal.show_input_field(True)
         
         # Обновление кнопки

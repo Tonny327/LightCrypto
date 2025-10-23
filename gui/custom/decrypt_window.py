@@ -75,6 +75,7 @@ class CustomCodecDecryptGUI(LibSodiumDecryptGUI):
         
         # Валидация порта
         port_str = self.port_var.get().strip()
+        mode = self.mode_var.get()
         
         try:
             port = int(port_str)
@@ -93,7 +94,7 @@ class CustomCodecDecryptGUI(LibSodiumDecryptGUI):
         
         # Сохранение параметров
         self.config.set_custom_port(port)
-        self.config.set_custom_msg_mode(self.msg_mode_var.get())
+        self.config.set_custom_msg_mode(mode == 'msg')
         self.codec_panel.save_to_config()
         self.config.save()
         
@@ -108,8 +109,15 @@ class CustomCodecDecryptGUI(LibSodiumDecryptGUI):
             '--h2', str(params['h2'])
         ]
         
-        if self.msg_mode_var.get():
+        if mode == 'msg':
             cmd.append('--msg')
+        elif mode == 'file':
+            cmd.append('--file')
+            # Добавляем путь для сохранения если указан
+            output_path = self.output_path_var.get().strip()
+            if output_path:
+                cmd.append('--output')
+                cmd.append(output_path)
         
         cmd.append(str(port))
         

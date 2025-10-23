@@ -132,6 +132,12 @@ public:
     // Получить процент завершения
     float get_progress() const;
     
+    // Получить количество полученных чанков
+    uint32_t get_received_count() const { return received_count_; }
+    
+    // Получить общее количество чанков
+    uint32_t get_total_chunks() const { return header_.total_chunks; }
+    
     // Сохранить файл на диск
     bool save_file(const std::string& output_path);
     
