@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Lightweight C++ port of DigitalCodingFun and a minimal codec around it.
@@ -40,6 +41,15 @@ public:
     // Get current encoder states
     int32_t get_enc_h1() const { return enc_h1_; }
     int32_t get_enc_h2() const { return enc_h2_; }
+    
+    // Get error correction statistics
+    std::pair<size_t, size_t> get_error_stats() const { 
+        return std::make_pair(errors_corrected_h_, errors_corrected_v_); 
+    }
+    void reset_error_stats() const { 
+        errors_corrected_h_ = 0; 
+        errors_corrected_v_ = 0; 
+    }
 
     // Encode raw bytes into coded bytes using the digital coding scheme.
     // Supports any M up to 31. Each state is serialized using bytesPerSymbol() bytes.
@@ -49,10 +59,12 @@ public:
     std::vector<uint8_t> decodeBytes(const std::vector<uint8_t> &coded);
 
     // Encode full message: packs input bytes into Q-bit symbols, then encodes symbols
+    // Uses 1-1 scheme: each symbol produces [h, v] block pair
     // If use_hash=true, prepends SHA-256 hash for integrity check
     // Default: false (for MATLAB compatibility - collision handling is enough)
     std::vector<uint8_t> encodeMessage(const std::vector<uint8_t> &input, bool use_hash = false);
-    // Decode full message: decodes symbols, then unpacks back to bytes (expected_len required)
+    // Decode full message: decodes symbols using hypothesis checking, then unpacks back to bytes
+    // Uses 1-1 scheme with error correction via Decode11ext
     // If use_hash=true, verifies SHA-256 hash and returns empty vector on mismatch
     // Default: false (for MATLAB compatibility)
     std::vector<uint8_t> decodeMessage(const std::vector<uint8_t> &coded, size_t expected_len, bool use_hash = false);
@@ -66,6 +78,19 @@ private:
 
     // Compute DigitalCodingFun for one function index (1-based like MATLAB), given previous states x,y
     int32_t digitalCodingFun(int funcIndex1Based, int32_t x, int32_t y) const;
+
+    // Compute all coding functions for given arguments (like AllCodeFun in MATLAB)
+    // Returns vector of size 2^Q with all function results
+    std::vector<int32_t> allCodeFun(int32_t x, int32_t y) const;
+
+    // BitChange: invert bit at position pos (1-based, like MATLAB)
+    static int32_t bitChange(int32_t x, int pos);
+
+    // Decode11ext: extended decoding with error hypothesis checking
+    // Returns pair: (decoded indices vector, error position)
+    // flag: 0 = check for no error, 1 = error in h, 2 = error in v
+    std::pair<std::vector<int32_t>, int32_t> decode11ext(
+        int32_t h1, int32_t h2, int32_t h, int32_t v, int flag) const;
 
     // Wrap signed integer to M-bit two's complement range [-(2^(M-1))..(2^(M-1)-1)]
     int32_t wrapM(int64_t v) const;
@@ -81,10 +106,15 @@ private:
     int cols_ = 0;
 
     // rolling states for encode/decode
-    int32_t enc_h1_ = 0;
-    int32_t enc_h2_ = 0;
-    int32_t dec_h1_ = 0;
-    int32_t dec_h2_ = 0;
+    // For 1-1 scheme: h1 = v(k-1), h2 = h(k-1)
+    int32_t enc_h1_ = 0;  // v(k-1) for encoder
+    int32_t enc_h2_ = 0;  // h(k-1) for encoder
+    int32_t dec_h1_ = 0;  // v(k-1) for decoder
+    int32_t dec_h2_ = 0;  // h(k-1) for decoder
+    
+    // Statistics for error correction
+    mutable size_t errors_corrected_h_ = 0;  // errors corrected in h blocks
+    mutable size_t errors_corrected_v_ = 0;  // errors corrected in v blocks
 };
 
 } // namespace digitalcodec

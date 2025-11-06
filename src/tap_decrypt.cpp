@@ -12,6 +12,7 @@
 #include <sodium.h>
 #include <arpa/inet.h> // для inet_pton
 #include <thread>
+#include <csignal>
 #include "digital_codec.h"
 #include "file_transfer.h"
 
@@ -19,6 +20,33 @@ constexpr size_t MAX_PACKET_SIZE = 16000;  // Увеличено для подд
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
 constexpr size_t NONCE_SIZE = crypto_aead_chacha20poly1305_IETF_NPUBBYTES;
 constexpr size_t HASH_SIZE = crypto_hash_sha256_BYTES;
+
+// Глобальный указатель на кодек для доступа из обработчика сигналов
+static digitalcodec::DigitalCodec* g_codec_ptr = nullptr;
+static bool g_use_codec = false;
+
+// Функция для вывода статистики ошибок
+void print_error_stats() {
+    if (g_use_codec && g_codec_ptr) {
+        auto stats = g_codec_ptr->get_error_stats();
+        if (stats.first > 0 || stats.second > 0) {
+            std::cout << "\n📊 Статистика помехоустойчивости:\n";
+            std::cout << "   🔧 Исправлено ошибок в блоках h: " << stats.first << "\n";
+            std::cout << "   🔧 Исправлено ошибок в блоках v: " << stats.second << "\n";
+            std::cout << "   📈 Всего исправлено: " << (stats.first + stats.second) << " ошибок\n";
+        } else {
+            std::cout << "\n✅ Ошибок не обнаружено — передача прошла без искажений\n";
+        }
+    }
+}
+
+// Обработчик сигналов для корректного завершения
+void signal_handler(int sig) {
+    std::cout << "\n\n⏹️  Получен сигнал остановки (" << sig << ")\n";
+    print_error_stats();
+    std::cout << "👋 Завершение работы...\n";
+    exit(0);
+}
 
 int open_tap(const std::string &dev_name)
 {
@@ -515,6 +543,15 @@ int main(int argc, char *argv[])
             codec.reset(); // Восстанавливаем сброс состояний для правильной инициализации
             std::cout << "🎛️  Цифровой кодек включён (M=" << codec_params.bitsM
                       << ", Q=" << codec_params.bitsQ << ", fun=" << codec_params.funType << ")\n";
+            std::cout << "🛡️  Помехоустойчивый алгоритм активен: схема 1-1 с автоматическим исправлением ошибок\n";
+            
+            // Устанавливаем глобальный указатель для обработчика сигналов
+            g_codec_ptr = &codec;
+            g_use_codec = true;
+            
+            // Регистрируем обработчики сигналов
+            signal(SIGTERM, signal_handler);
+            signal(SIGINT, signal_handler);
         } catch (const std::exception &e) {
             std::cerr << "❌ Ошибка инициализации кодека: " << e.what() << "\n";
             return 1;
@@ -528,29 +565,39 @@ int main(int argc, char *argv[])
     // Режим приёма файлов
     if (file_mode)
     {
+        bool success = false;
         if (use_codec)
         {
-            if (!receive_file_codec(sock, &codec, output_path)) {
-                std::cerr << "❌ Ошибка при приёме файла через кодек\n";
-                close(sock);
-                if (tap_fd >= 0) close(tap_fd);
-                return 1;
+            success = receive_file_codec(sock, &codec, output_path);
+            if (!success) {
+                std::cerr << "❌ Ошибка при приёме файла через кодек (не все чанки получены)\n";
             }
         }
         else
         {
-            if (!receive_file_libsodium(sock, rx_key, output_path)) {
+            success = receive_file_libsodium(sock, rx_key, output_path);
+            if (!success) {
                 std::cerr << "❌ Ошибка при приёме файла через libsodium\n";
-                close(sock);
-                if (tap_fd >= 0) close(tap_fd);
-                return 1;
             }
         }
         
-        // Файл успешно получен, завершаем программу
+        // ВАЖНО: Выводим статистику в любом случае (успех или ошибка)
+        // Это позволяет увидеть статистику даже если не все чанки были получены
+        if (use_codec) {
+            auto stats = codec.get_error_stats();
+            if (stats.first > 0 || stats.second > 0) {
+                std::cout << "\n📊 Статистика помехоустойчивости:\n";
+                std::cout << "   🔧 Исправлено ошибок в блоках h: " << stats.first << "\n";
+                std::cout << "   🔧 Исправлено ошибок в блоках v: " << stats.second << "\n";
+                std::cout << "   📈 Всего исправлено: " << (stats.first + stats.second) << " ошибок\n";
+            } else {
+                std::cout << "\n✅ Ошибок не обнаружено — передача прошла без искажений\n";
+            }
+        }
+        
         close(sock);
         if (tap_fd >= 0) close(tap_fd);
-        return 0;
+        return success ? 0 : 1;
     }
 
     // Основной цикл приёма (для режимов сообщений и кадров)
@@ -664,6 +711,19 @@ int main(int argc, char *argv[])
         }
     }
 
+    // Вывод статистики исправления ошибок (если использовался кодек)
+    if (use_codec) {
+        auto stats = codec.get_error_stats();
+        if (stats.first > 0 || stats.second > 0) {
+            std::cout << "\n📊 Статистика помехоустойчивости:\n";
+            std::cout << "   🔧 Исправлено ошибок в блоках h: " << stats.first << "\n";
+            std::cout << "   🔧 Исправлено ошибок в блоках v: " << stats.second << "\n";
+            std::cout << "   📈 Всего исправлено: " << (stats.first + stats.second) << " ошибок\n";
+        } else {
+            std::cout << "\n✅ Ошибок не обнаружено — передача прошла без искажений\n";
+        }
+    }
+    
     if (tap_fd >= 0) {
         close(tap_fd);
     }

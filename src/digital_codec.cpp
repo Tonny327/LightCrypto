@@ -81,6 +81,8 @@ void DigitalCodec::reset() {
     enc_h2_ = wrapM(params_.h2);
     dec_h1_ = enc_h1_;
     dec_h2_ = enc_h2_;
+    errors_corrected_h_ = 0;
+    errors_corrected_v_ = 0;
     // Отладочный вывод закомментирован для чистого вывода (как в LibSodium)
     // std::cout << "🔄 Состояния кодека инициализированы: enc_h1_=" << enc_h1_ 
     //           << ", enc_h2_=" << enc_h2_ << ", dec_h1_=" << dec_h1_ 
@@ -177,6 +179,166 @@ int32_t DigitalCodec::digitalCodingFun(int funcIndex1Based, int32_t x, int32_t y
         default:
             return 0;
     }
+}
+
+// BitChange: invert bit at position pos (1-based, like MATLAB)
+int32_t DigitalCodec::bitChange(int32_t x, int pos) {
+    if (pos < 1 || pos > 32) return x;
+    int bitPos = pos - 1;  // convert to 0-based
+    int32_t mask = 1 << bitPos;
+    return x ^ mask;  // XOR flips the bit
+}
+
+// AllCodeFun: compute all coding functions for given arguments
+std::vector<int32_t> DigitalCodec::allCodeFun(int32_t x, int32_t y) const {
+    const int N = static_cast<int>(ipow2(params_.bitsQ));
+    std::vector<int32_t> R;
+    R.reserve(N);
+    
+    for (int k = 1; k <= N; ++k) {
+        R.push_back(digitalCodingFun(k, x, y));
+    }
+    
+    return R;
+}
+
+// Decode11ext: extended decoding with error hypothesis checking
+std::pair<std::vector<int32_t>, int32_t> DigitalCodec::decode11ext(
+    int32_t h1, int32_t h2, int32_t h, int32_t v, int flag) const {
+    
+    std::vector<int32_t> I;
+    int32_t pos = 0;
+    const int Q = params_.bitsQ;
+    
+    // Проверка гипотезы об ОТСУТСТВИИ ошибки в обоих блоках пары [h_k, v_k]
+    if (flag == 0) {
+        std::vector<int32_t> RR = allCodeFun(h1, h2);
+        std::vector<int32_t> RRv = allCodeFun(h, h1);
+        
+        // Find indices where RR == h
+        std::vector<int32_t> indh;
+        for (size_t i = 0; i < RR.size(); ++i) {
+            if (RR[i] == h) {
+                indh.push_back(static_cast<int32_t>(i + 1));  // 1-based index
+            }
+        }
+        
+        // Find indices where RRv == v
+        std::vector<int32_t> indv;
+        for (size_t i = 0; i < RRv.size(); ++i) {
+            if (RRv[i] == v) {
+                indv.push_back(static_cast<int32_t>(i + 1));  // 1-based index
+            }
+        }
+        
+        // Intersection (avoid duplicates)
+        for (int32_t ih : indh) {
+            for (int32_t iv : indv) {
+                if (ih == iv) {
+                    // Check if already in I
+                    bool found = false;
+                    for (int32_t val : I) {
+                        if (val == ih) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        I.push_back(ih);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Декодирование для случая поражения h_k из пары [h_k, v_k]
+    if (flag == 1) {
+        std::vector<int32_t> RR = allCodeFun(h1, h2);
+        
+        // Try each bit position
+        for (int k = 1; k <= Q; ++k) {
+            int32_t tmp = bitChange(h, k);  // гипотеза о корректном состоянии h
+            
+            // Find indices where RR == tmp
+            std::vector<int32_t> indh;
+            for (size_t i = 0; i < RR.size(); ++i) {
+                if (RR[i] == tmp) {
+                    indh.push_back(static_cast<int32_t>(i + 1));  // 1-based
+                }
+            }
+            
+            // Compute RRv with corrected h
+            std::vector<int32_t> RRv = allCodeFun(tmp, h1);
+            
+            // Find indices where RRv == v
+            std::vector<int32_t> indv;
+            for (size_t i = 0; i < RRv.size(); ++i) {
+                if (RRv[i] == v) {
+                    indv.push_back(static_cast<int32_t>(i + 1));  // 1-based
+                }
+            }
+            
+            // Intersection
+            if (!indh.empty() && !indv.empty()) {
+                for (int32_t ih : indh) {
+                    for (int32_t iv : indv) {
+                        if (ih == iv) {
+                            I.push_back(ih);
+                            pos = k;
+                            break;
+                        }
+                    }
+                    if (pos > 0) break;
+                }
+                if (pos > 0) break;
+            }
+        }
+    }
+    
+    // Декодирование для случая поражения v_k из пары [h_k, v_k]
+    if (flag == 2) {
+        std::vector<int32_t> RR = allCodeFun(h1, h2);
+        
+        // Find indices where RR == h (h is not corrupted)
+        std::vector<int32_t> indh;
+        for (size_t i = 0; i < RR.size(); ++i) {
+            if (RR[i] == h) {
+                indh.push_back(static_cast<int32_t>(i + 1));  // 1-based
+            }
+        }
+        
+        std::vector<int32_t> RRv = allCodeFun(h, h1);
+        
+        // Try each bit position in v
+        for (int k = 1; k <= Q; ++k) {
+            int32_t tmp = bitChange(v, k);  // гипотеза об истинном состоянии v
+            
+            // Find indices where RRv == tmp
+            std::vector<int32_t> indv;
+            for (size_t i = 0; i < RRv.size(); ++i) {
+                if (RRv[i] == tmp) {
+                    indv.push_back(static_cast<int32_t>(i + 1));  // 1-based
+                }
+            }
+            
+            // Intersection
+            if (!indv.empty()) {
+                for (int32_t ih : indh) {
+                    for (int32_t iv : indv) {
+                        if (ih == iv) {
+                            I.push_back(ih);
+                            pos = k;
+                            break;
+                        }
+                    }
+                    if (pos > 0) break;
+                }
+                if (pos > 0) break;
+            }
+        }
+    }
+    
+    return std::make_pair(I, pos);
 }
 
 std::vector<uint8_t> DigitalCodec::encodeBytes(const std::vector<uint8_t> &input) {
@@ -299,9 +461,11 @@ std::vector<uint8_t> DigitalCodec::unpackSymbolsToBytes(const std::vector<uint8_
 }
 
 std::vector<uint8_t> DigitalCodec::encodeSymbols(const std::vector<uint8_t> &symbols) {
+    // 1-1 encoding scheme: each symbol produces [h, v] block pair
+    // MATLAB: sig(2*BL - 1) = h, sig(2*BL) = v
     const int funCount = static_cast<int>(ipow2(params_.bitsQ));
     std::vector<uint8_t> out;
-    out.reserve(symbols.size());
+    out.reserve(symbols.size() * 2 * bytesPerSymbol());  // Each symbol produces 2 blocks
     
     for (uint8_t symByte : symbols) {
         int sym = static_cast<int>(symByte);
@@ -310,182 +474,135 @@ std::vector<uint8_t> DigitalCodec::encodeSymbols(const std::vector<uint8_t> &sym
             sym = sym % funCount;
         }
         
-        int32_t x = enc_h1_;
-        int32_t y = enc_h2_;
+        // MATLAB: II = INF(BL) (1-based index)
+        int II = sym + 1;  // Convert to 1-based
         
-        // MATLAB: Вычисляем все функции для проверки коллизий
-        std::vector<int32_t> RR(funCount);
-        for (int ff = 0; ff < funCount; ++ff) {
-            RR[ff] = digitalCodingFun(ff + 1, x, y);
-        }
+        // MATLAB: x = sig(2*BL - 2) = v(k-1) = enc_h1_
+        //         y = sig(2*BL - 3) = h(k-1) = enc_h2_
+        int32_t x = enc_h1_;  // v(k-1)
+        int32_t y = enc_h2_;  // h(k-1)
         
-        // MATLAB: Проверяем наличие коллизий (unique)
-        std::vector<int32_t> uniqueVals;
-        std::vector<int> firstIndices;  // IA в MATLAB
-        for (int ff = 0; ff < funCount; ++ff) {
-            bool found = false;
-            for (size_t u = 0; u < uniqueVals.size(); ++u) {
-                if (RR[ff] == uniqueVals[u]) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                uniqueVals.push_back(RR[ff]);
-                firstIndices.push_back(ff);
-            }
-        }
+        // MATLAB: RR = AllCodeFun([x y], COEFF, FunType)
+        std::vector<int32_t> RR = allCodeFun(x, y);
         
-        int32_t next;
-        bool skipSymbol = false;
+        // MATLAB: sig(2*BL - 1) = RR(II)  -> h block
+        int32_t h = RR[II - 1];  // II is 1-based, RR is 0-based
         
-        // MATLAB: if length(CoderData) == FunCount
-        if (static_cast<int>(uniqueVals.size()) == funCount) {
-            // Нет коллизий - кодируем нормально
-            next = RR[sym];
-        } else {
-            // Есть коллизии - определяем индексы дубликатов
-            // DupData = setdiff(1:FunCount, IA);
-            std::vector<int> dupIndices;
-            for (int ff = 0; ff < funCount; ++ff) {
-                bool isFirst = false;
-                for (int idx : firstIndices) {
-                    if (ff == idx) {
-                        isFirst = true;
-                        break;
-                    }
-                }
-                if (!isFirst) {
-                    dupIndices.push_back(ff);
-                }
-            }
-            
-            // MATLAB: if II < DupData (проверяем, что sym меньше всех дубликатов)
-            bool symBeforeDups = true;
-            for (int dupIdx : dupIndices) {
-                if (sym >= dupIdx) {
-                    symBeforeDups = false;
-                    break;
-                }
-            }
-            
-            if (symBeforeDups) {
-                next = RR[sym];
-            } else {
-                // MATLAB: InfoInsteadOfRand mode
-                bool symInRR = false;
-                for (int32_t val : RR) {
-                    if ((sym + 1) == val) {  // sym+1 потому что II - это информационное состояние 1..FunCount
-                        symInRR = true;
-                        break;
-                    }
-                }
-                
-                if (!symInRR && params_.infoInsteadOfRand) {
-                    // Прямая передача информационного значения
-                    next = sym + 1;
-                } else {
-                    // MATLAB: Пропускаем символ, генерируем случайное значение
-                    skipSymbol = true;
-                    std::srand(static_cast<unsigned>(std::time(nullptr)) + sym);
-                    int32_t minVal = -(1 << (params_.bitsM - 1));
-                    int32_t maxVal = (1 << (params_.bitsM - 1)) - 1;
-                    
-                    do {
-                        next = minVal + (std::rand() % (maxVal - minVal + 1));
-                        
-                        // Проверка: не равно ни одному из RR
-                        bool inRR = false;
-                        for (int32_t val : RR) {
-                            if (next == val) {
-                                inRR = true;
-                                break;
-                            }
-                        }
-                        if (inRR) continue;
-                        
-                        // Проверка: не равно информационным значениям (если InfoInsteadOfRand)
-                        if (params_.infoInsteadOfRand && next >= 1 && next <= funCount) {
-                            continue;
-                        }
-                        
-                        break;
-                    } while (true);
-                    
-                    std::cerr << "⚠️  Пропущен символ " << sym << " из-за коллизии (Nskip++)\n";
-                }
-            }
-        }
+        // MATLAB: x = sig(2*BL - 1) = h
+        //         y = sig(2*BL - 2) = v(k-1) = enc_h1_
+        x = h;
+        y = enc_h1_;  // v(k-1)
         
-        // Обновляем состояния
-        enc_h2_ = enc_h1_;
-        enc_h1_ = next;
+        // MATLAB: RRv = AllCodeFun([x y], COEFF, FunType)
+        std::vector<int32_t> RRv = allCodeFun(x, y);
         
-        // Записываем закодированное значение
-        toBytes(next, out);
+        // MATLAB: sig(2*BL) = RRv(II)  -> v block
+        int32_t v = RRv[II - 1];  // II is 1-based, RRv is 0-based
+        
+        // Write [h, v] block pair
+        toBytes(h, out);
+        toBytes(v, out);
+        
+        // Update states for next block: h1 = v(k), h2 = h(k)
+        enc_h2_ = h;  // h(k) -> h2 (for next block: h2 = h(k-1))
+        enc_h1_ = v;  // v(k) -> h1 (for next block: h1 = v(k-1))
     }
     return out;
 }
 
 std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &coded) {
-    const int funCount = static_cast<int>(ipow2(params_.bitsQ));
+    // 1-1 decoding scheme: each [h, v] block pair decodes to one symbol
+    // Uses Decode11ext with hypothesis checking for error correction
     const int bps = bytesPerSymbol();
     std::vector<uint8_t> out;
-    out.reserve(coded.size() / bps);
+    out.reserve(coded.size() / (2 * bps));  // Each symbol is encoded as 2 blocks
     
-    for (size_t i = 0; i + bps <= coded.size(); i += bps) {
-        int32_t observed = fromBytes(&coded[i]);
-        int32_t x = dec_h1_;
-        int32_t y = dec_h2_;
+    // Process blocks in pairs [h, v]
+    for (size_t i = 0; i + 2 * bps <= coded.size(); i += 2 * bps) {
+        // Read h and v blocks
+        int32_t h = fromBytes(&coded[i]);
+        int32_t v = fromBytes(&coded[i + bps]);
         
-        // MATLAB: Вычисляем все функции
-        std::vector<int32_t> RR(funCount);
-        for (int ff = 0; ff < funCount; ++ff) {
-            RR[ff] = digitalCodingFun(ff + 1, x, y);
-        }
+        // MATLAB: h1 = rr(2*BL - 2) = v(k-1) = dec_h1_
+        //         h2 = rr(2*BL - 3) = h(k-1) = dec_h2_
+        int32_t h1 = dec_h1_;  // v(k-1)
+        int32_t h2 = dec_h2_;  // h(k-1)
         
-        // MATLAB: Ищем совпадение Iind = find(r(k) == RR)
-        int matched = -1;
-        for (int ff = 0; ff < funCount; ++ff) {
-            if (RR[ff] == observed) {
-                matched = ff;  // Берём первое совпадение
-                break;
-            }
-        }
+        int errPosDec = 0;  // 0 = no error, 1 = error in h, 2 = error in v
+        std::vector<int32_t> I_;
+        int32_t ePos = 0;
         
-        if (matched >= 0) {
-            // Найдено совпадение - декодируем символ
-            int32_t next = observed;
-            dec_h2_ = dec_h1_;
-            dec_h1_ = next;
-            out.push_back(static_cast<uint8_t>(matched));
+        // 1. Проверка гипотезы «ОШИБКА ОТСУТСТВУЕТ»
+        auto result = decode11ext(h1, h2, h, v, 0);
+        I_ = result.first;
+        ePos = result.second;
+        
+        if (I_.empty()) {
+            errPosDec = 1;  // переход к гипотезе «ошибка в H»
         } else {
-            // MATLAB: Проверяем прямую передачу информации
-            // Iind = find(r(k) == 1:FunCount)
-            if (params_.infoInsteadOfRand && observed >= 1 && observed <= funCount) {
-                // Прямая передача информационного значения
-                int32_t next = observed;
-                dec_h2_ = dec_h1_;
-                dec_h1_ = next;
-                out.push_back(static_cast<uint8_t>(observed - 1));  // observed-1 для индексации от 0
-            } else {
-                // MATLAB: Пропускаем символ (Nskip++)
-                // Обновляем состояния тем же значением
-                int32_t next = observed;
-                dec_h2_ = dec_h1_;
-                dec_h1_ = next;
-                // НЕ добавляем в out - это реализация пропуска символа
-                std::cerr << "⚠️  Пропущен символ при декодировании (не найдено совпадение)";
-                std::cerr << " [observed=" << observed << ", x=" << x << ", y=" << y << "]";
-                std::cerr << " [RR=";
-                for (int ff = 0; ff < funCount; ++ff) {
-                    std::cerr << RR[ff];
-                    if (ff < funCount - 1) std::cerr << ",";
-                }
-                std::cerr << "]\n";
+            // Декодированное значение при отсутствии ошибок
+            int32_t decodedIdx = I_[0] - 1;  // Convert 1-based to 0-based
+            if (decodedIdx >= 0 && decodedIdx < static_cast<int32_t>(ipow2(params_.bitsQ))) {
+                out.push_back(static_cast<uint8_t>(decodedIdx));
             }
         }
+        
+        // 2. Проверка гипотезы «ОШИБКА в СУББЛОКЕ H»
+        if (errPosDec == 1) {
+            result = decode11ext(h1, h2, h, v, 1);
+            I_ = result.first;
+            ePos = result.second;
+            
+            if (I_.empty()) {
+                errPosDec = 2;  // переход к гипотезе «ошибка в V»
+            } else {
+                int32_t decodedIdx = I_[0] - 1;  // Convert 1-based to 0-based
+                if (decodedIdx >= 0 && decodedIdx < static_cast<int32_t>(ipow2(params_.bitsQ))) {
+                    out.push_back(static_cast<uint8_t>(decodedIdx));
+                }
+            }
+        }
+        
+        // 3. Проверка гипотезы «ОШИБКА в СУББЛОКЕ V»
+        if (errPosDec == 2) {
+            result = decode11ext(h1, h2, h, v, 2);
+            I_ = result.first;
+            ePos = result.second;
+            
+            if (!I_.empty()) {
+                int32_t decodedIdx = I_[0] - 1;  // Convert 1-based to 0-based
+                if (decodedIdx >= 0 && decodedIdx < static_cast<int32_t>(ipow2(params_.bitsQ))) {
+                    out.push_back(static_cast<uint8_t>(decodedIdx));
+                }
+            }
+        }
+        
+        // ИСПРАВЛЕНИЕ ОШИБКИ в СИГНАЛЕ
+        // исправление в h:
+        if (errPosDec == 1 && ePos > 0) {
+            int32_t h_before = h;
+            h = bitChange(h, ePos);
+            errors_corrected_h_++;
+            std::cout << "🔧 [Помехоустойчивость] Обнаружена и исправлена ошибка в блоке h: "
+                      << "бит " << ePos << " инвертирован (было: " << h_before 
+                      << ", стало: " << h << ")\n";
+        }
+        // исправление в v:
+        if (errPosDec == 2 && ePos > 0) {
+            int32_t v_before = v;
+            v = bitChange(v, ePos);
+            errors_corrected_v_++;
+            std::cout << "🔧 [Помехоустойчивость] Обнаружена и исправлена ошибка в блоке v: "
+                      << "бит " << ePos << " инвертирован (было: " << v_before 
+                      << ", стало: " << v << ")\n";
+        }
+        
+        // Обновление состояний декодера для следующего блока
+        // После декодирования: h1 = v(k), h2 = h(k)
+        dec_h2_ = h;  // h(k) -> h2 (for next block: h2 = h(k-1))
+        dec_h1_ = v;  // v(k) -> h1 (for next block: h1 = v(k-1))
     }
+    
     return out;
 }
 
