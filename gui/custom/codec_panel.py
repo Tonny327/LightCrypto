@@ -42,6 +42,9 @@ class CodecPanel:
         self.funType_var = tk.IntVar(value=config.get_custom_funType())
         self.h1_var = tk.IntVar(value=config.get_custom_h1())
         self.h2_var = tk.IntVar(value=config.get_custom_h2())
+        self.debug_var = tk.BooleanVar(value=config.get_custom_debug())
+        self.inject_errors_var = tk.BooleanVar(value=config.get_custom_inject_errors())
+        self.error_rate_var = tk.DoubleVar(value=config.get_custom_error_rate())
         
         # Данные CSV
         self.csv_analysis = None
@@ -353,6 +356,94 @@ class CodecPanel:
         )
         info_btn.pack(side=tk.LEFT, padx=5)
         self._create_tooltip(info_btn, TOOLTIP_H1_H2)
+        
+        # Секция тестирования и отладки
+        debug_frame = tk.LabelFrame(
+            params_frame,
+            text="🔧 Тестирование и отладка",
+            font=FONT_NORMAL,
+            bg=COLOR_PANEL,
+            fg=COLOR_TEXT_PRIMARY,
+            padx=10,
+            pady=5
+        )
+        debug_frame.pack(fill=tk.X, pady=10)
+        
+        # Чекбокс для режима отладки
+        debug_checkbox = tk.Checkbutton(
+            debug_frame,
+            text="Режим отладки (вывод информации о проверке гипотез)",
+            variable=self.debug_var,
+            font=FONT_NORMAL,
+            bg=COLOR_PANEL,
+            fg=COLOR_TEXT_PRIMARY,
+            activebackground=COLOR_PANEL,
+            activeforeground=COLOR_TEXT_PRIMARY
+        )
+        debug_checkbox.pack(anchor=tk.W, pady=5)
+        
+        # Чекбокс для внесения ошибок
+        inject_checkbox = tk.Checkbutton(
+            debug_frame,
+            text="Искусственное внесение ошибок (для тестирования помехоустойчивости)",
+            variable=self.inject_errors_var,
+            font=FONT_NORMAL,
+            bg=COLOR_PANEL,
+            fg=COLOR_TEXT_PRIMARY,
+            activebackground=COLOR_PANEL,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            command=self._on_inject_errors_toggled
+        )
+        inject_checkbox.pack(anchor=tk.W, pady=5)
+        
+        # Поле для вероятности ошибок
+        error_rate_frame = tk.Frame(debug_frame, bg=COLOR_PANEL)
+        error_rate_frame.pack(fill=tk.X, pady=5)
+        
+        error_rate_label = tk.Label(
+            error_rate_frame,
+            text="Вероятность ошибки (%):",
+            font=FONT_NORMAL,
+            bg=COLOR_PANEL,
+            fg=COLOR_TEXT_PRIMARY
+        )
+        error_rate_label.pack(side=tk.LEFT, padx=5)
+        
+        self.error_rate_spinbox = tk.Spinbox(
+            error_rate_frame,
+            from_=0.0,
+            to=100.0,
+            increment=0.1,
+            textvariable=self.error_rate_var,
+            font=FONT_NORMAL,
+            width=10,
+            format="%.2f"
+        )
+        self.error_rate_spinbox.pack(side=tk.LEFT, padx=5)
+        # Устанавливаем начальное состояние в зависимости от значения чекбокса
+        if not self.inject_errors_var.get():
+            self.error_rate_spinbox.config(state=tk.DISABLED)
+        
+        # Информация о параметрах
+        debug_info = tk.Label(
+            debug_frame,
+            text="💡 Режим отладки показывает процесс проверки гипотез об ошибках.\n"
+                 "Внесение ошибок позволяет протестировать работу алгоритма исправления.",
+            font=FONT_NORMAL,
+            bg=COLOR_PANEL,
+            fg=COLOR_TEXT_SECONDARY,
+            anchor=tk.W,
+            justify=tk.LEFT,
+            wraplength=650
+        )
+        debug_info.pack(fill=tk.X, pady=5)
+    
+    def _on_inject_errors_toggled(self):
+        """Обработчик изменения состояния чекбокса внесения ошибок"""
+        if self.inject_errors_var.get():
+            self.error_rate_spinbox.config(state=tk.NORMAL)
+        else:
+            self.error_rate_spinbox.config(state=tk.DISABLED)
     
     def _create_profiles_section(self):
         """Секция управления профилями"""
@@ -845,7 +936,10 @@ class CodecPanel:
             'Q': self.Q_var.get(),
             'funType': self.funType_var.get(),
             'h1': self.h1_var.get(),
-            'h2': self.h2_var.get()
+            'h2': self.h2_var.get(),
+            'debug': self.debug_var.get(),
+            'injectErrors': self.inject_errors_var.get(),
+            'errorRate': self.error_rate_var.get() / 100.0  # Конвертируем проценты в долю
         }
     
     def save_to_config(self):
@@ -857,6 +951,9 @@ class CodecPanel:
         self.config.set_custom_h1(self.h1_var.get())
         self.config.set_custom_h2(self.h2_var.get())
         self.config.set_custom_auto_q(self.auto_Q_var.get())
+        self.config.set_custom_debug(self.debug_var.get())
+        self.config.set_custom_inject_errors(self.inject_errors_var.get())
+        self.config.set_custom_error_rate(self.error_rate_var.get())
     
     def is_valid(self):
         """Проверка валидности текущих параметров"""

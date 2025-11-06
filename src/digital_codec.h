@@ -18,6 +18,9 @@ struct CodecParams {
     int32_t h1 = 7;          // initial state 1
     int32_t h2 = 23;         // initial state 2
     bool infoInsteadOfRand = true;  // MATLAB InfoInsteadOfRand mode for collision handling
+    bool debugMode = false;  // Enable debug output for error detection/correction
+    bool injectErrors = false;  // Enable artificial error injection for testing
+    double errorRate = 0.01;  // Error injection rate (0.0 to 1.0) - probability of error per block
 };
 
 // COEFF is a matrix with rows = 2^Q, columns depend on funType

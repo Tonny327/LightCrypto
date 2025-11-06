@@ -14,6 +14,7 @@
 #include <thread>
 #include <chrono>
 #include <iomanip>
+#include <random>
 #include "digital_codec.h"
 #include "file_transfer.h"
 
@@ -22,6 +23,66 @@ constexpr size_t MAX_PACKET_SIZE = 16000;  // Увеличено для подд
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
 constexpr size_t NONCE_SIZE = crypto_aead_chacha20poly1305_IETF_NPUBBYTES;
 constexpr size_t HASH_SIZE = crypto_hash_sha256_BYTES;
+
+// Функция искусственного внесения ошибок для тестирования помехоустойчивости
+std::vector<uint8_t> inject_errors(const std::vector<uint8_t> &data, double error_rate, int bitsM) {
+    if (error_rate <= 0.0 || data.empty()) {
+        return data;
+    }
+    
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
+    std::uniform_int_distribution<int> bit_dist(1, bitsM);  // Позиция бита 1-based (как в MATLAB)
+    
+    std::vector<uint8_t> corrupted = data;
+    int errors_injected = 0;
+    
+    // Для схемы 1-1: каждый символ = 2 блока по bytesPerSymbol() байт
+    // Формат: [len(2 bytes)] [h1] [v1] [h2] [v2] ...
+    int bytes_per_block = (bitsM + 7) / 8;
+    int bytes_per_symbol = 2 * bytes_per_block;
+    
+    // Пропускаем первые 2 байта (длина сообщения) и вносим ошибки в блоках
+    size_t data_start = 2;  // Пропускаем длину
+    if (data.size() < data_start) {
+        return data;  // Слишком маленькие данные
+    }
+    
+    // Вносим ошибки в блоках (не в служебных данных)
+    for (size_t i = data_start; i + bytes_per_symbol <= corrupted.size(); i += bytes_per_symbol) {
+        if (prob_dist(gen) < error_rate) {
+            // Выбираем случайный блок (h или v)
+            bool inject_in_h = (prob_dist(gen) < 0.5);
+            size_t block_start = i + (inject_in_h ? 0 : bytes_per_block);
+            
+            if (block_start + bytes_per_block <= corrupted.size()) {
+                // Выбираем случайный байт в блоке
+                std::uniform_int_distribution<size_t> byte_in_block(0, bytes_per_block - 1);
+                size_t byte_idx = block_start + byte_in_block(gen);
+                
+                // Выбираем случайный бит (1-based, как в MATLAB BitChange)
+                int bit_pos = bit_dist(gen);
+                int bit_pos_0based = bit_pos - 1;  // Конвертируем в 0-based для XOR
+                
+                if (bit_pos_0based < 8 && byte_idx < corrupted.size()) {
+                    corrupted[byte_idx] ^= (1 << bit_pos_0based);  // Инвертируем бит
+                    errors_injected++;
+                    
+                    std::cout << "💉 [Внесение ошибок] Инвертирован бит " << bit_pos 
+                              << " в байте " << byte_idx << " (блок " 
+                              << (inject_in_h ? "h" : "v") << ")\n";
+                }
+            }
+        }
+    }
+    
+    if (errors_injected > 0) {
+        std::cout << "💉 [Внесение ошибок] Всего внесено ошибок: " << errors_injected << "\n";
+    }
+    
+    return corrupted;
+}
 
 // Функция отправки синхронизации состояний кодека
 bool send_codec_sync(int sock, const sockaddr_in &dest_addr, digitalcodec::DigitalCodec *codec) {
@@ -255,7 +316,7 @@ bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vect
 
 // Функция отправки файла через кодек
 bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::DigitalCodec *codec,
-                     const std::string &file_path)
+                     const std::string &file_path, const digitalcodec::CodecParams &codec_params)
 {
     std::cout << "📁 Начинаем отправку файла через кодек: " << file_path << "\n";
     
@@ -287,6 +348,11 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     auto header_bytes = filetransfer::serialize_file_header(sender.get_header(), sender.get_filename());
     std::vector<uint8_t> framed_header = codec->encodeMessage(header_bytes);
     
+    // Искусственное внесение ошибок для тестирования (если включено)
+    if (codec_params.injectErrors) {
+        framed_header = inject_errors(framed_header, codec_params.errorRate, codec_params.bitsM);
+    }
+    
     sendto(sock, framed_header.data(), framed_header.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
     std::cout << "📤 Заголовок файла отправлен через кодек\n";
     
@@ -313,6 +379,11 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
         
         // Кодируем чанк (состояния продолжают эволюционировать)
         std::vector<uint8_t> framed_chunk = codec->encodeMessage(chunk_bytes);
+        
+        // Искусственное внесение ошибок для тестирования (если включено)
+        if (codec_params.injectErrors) {
+            framed_chunk = inject_errors(framed_chunk, codec_params.errorRate, codec_params.bitsM);
+        }
         
         // DEBUG: Размеры пакетов (раскомментируйте при необходимости)
         // std::cout << "🔍 DEBUG: Чанк " << (i+1) << " - оригинал: " << chunk_bytes.size() 
@@ -396,6 +467,9 @@ int main(int argc, char *argv[])
         if (arg == "--fun" && i + 1 < argc) { codec_params.funType = std::stoi(argv[++i]); continue; }
         if (arg == "--h1" && i + 1 < argc) { codec_params.h1 = std::stoi(argv[++i]); continue; }
         if (arg == "--h2" && i + 1 < argc) { codec_params.h2 = std::stoi(argv[++i]); continue; }
+        if (arg == "--debug") { codec_params.debugMode = true; continue; }
+        if (arg == "--inject-errors") { codec_params.injectErrors = true; continue; }
+        if (arg == "--error-rate" && i + 1 < argc) { codec_params.errorRate = std::stod(argv[++i]); continue; }
         positionals.push_back(arg);
     }
 
@@ -534,6 +608,13 @@ int main(int argc, char *argv[])
             std::cout << "🎛️  Цифровой кодек включён (M=" << codec_params.bitsM
                       << ", Q=" << codec_params.bitsQ << ", fun=" << codec_params.funType << ")\n";
             std::cout << "🛡️  Помехоустойчивый алгоритм активен: схема 1-1 с автоматическим исправлением ошибок\n";
+            if (codec_params.debugMode) {
+                std::cout << "🔍 Режим отладки включён: будет выводиться информация о проверке гипотез\n";
+            }
+            if (codec_params.injectErrors) {
+                std::cout << "💉 Искусственное внесение ошибок включено (вероятность: " 
+                          << std::fixed << std::setprecision(2) << (codec_params.errorRate * 100.0) << "%)\n";
+            }
             
             // Запускаем приём кадров в отдельном потоке для кодека (если НЕ режим сообщений и НЕ режим файлов)
             if (!message_mode && !file_mode)
@@ -552,7 +633,7 @@ int main(int argc, char *argv[])
         // Режим передачи файлов
         if (use_codec)
         {
-            if (!send_file_codec(sock, dest_addr, &codec, file_path)) {
+            if (!send_file_codec(sock, dest_addr, &codec, file_path, codec_params)) {
                 std::cerr << "❌ Ошибка при отправке файла через кодек\n";
                 close(sock);
                 return 1;
@@ -582,6 +663,12 @@ int main(int argc, char *argv[])
                 // РЕЖИМ КОДЕКА: кодируем полноценное сообщение с фреймингом
                 std::vector<uint8_t> payload(user_message.begin(), user_message.end());
                 std::vector<uint8_t> framed = codec.encodeMessage(payload);
+                
+                // Искусственное внесение ошибок для тестирования (если включено)
+                if (codec_params.injectErrors) {
+                    framed = inject_errors(framed, codec_params.errorRate, codec_params.bitsM);
+                }
+                
                 sendto(sock, framed.data(), framed.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
                 std::cout << "📤 Сообщение закодировано и отправлено (" << framed.size() << " байт)\n";
             }
@@ -640,6 +727,12 @@ int main(int argc, char *argv[])
                 // Кодек: кодируем кадр целиком как сообщение и отправляем напрямую
                 std::vector<uint8_t> payload(buffer, buffer + nread);
                 std::vector<uint8_t> framed = codec.encodeMessage(payload);
+                
+                // Искусственное внесение ошибок для тестирования (если включено)
+                if (codec_params.injectErrors) {
+                    framed = inject_errors(framed, codec_params.errorRate, codec_params.bitsM);
+                }
+                
                 sendto(sock, framed.data(), framed.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
                 std::cout << "📤 Отправлен кодированный кадр (" << nread << " байт)\n";
             }

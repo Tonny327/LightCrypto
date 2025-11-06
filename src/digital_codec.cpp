@@ -539,11 +539,17 @@ std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &cod
         
         if (I_.empty()) {
             errPosDec = 1;  // переход к гипотезе «ошибка в H»
+            if (params_.debugMode) {
+                std::cout << "🔍 [Отладка] Гипотеза 0: ошибка обнаружена, переходим к проверке блока h\n";
+            }
         } else {
             // Декодированное значение при отсутствии ошибок
             int32_t decodedIdx = I_[0] - 1;  // Convert 1-based to 0-based
             if (decodedIdx >= 0 && decodedIdx < static_cast<int32_t>(ipow2(params_.bitsQ))) {
                 out.push_back(static_cast<uint8_t>(decodedIdx));
+            }
+            if (params_.debugMode) {
+                std::cout << "🔍 [Отладка] Гипотеза 0: ошибок не обнаружено, декодировано: " << decodedIdx << "\n";
             }
         }
         
@@ -555,10 +561,17 @@ std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &cod
             
             if (I_.empty()) {
                 errPosDec = 2;  // переход к гипотезе «ошибка в V»
+                if (params_.debugMode) {
+                    std::cout << "🔍 [Отладка] Гипотеза 1: ошибка в h не подтверждена, переходим к проверке блока v\n";
+                }
             } else {
                 int32_t decodedIdx = I_[0] - 1;  // Convert 1-based to 0-based
                 if (decodedIdx >= 0 && decodedIdx < static_cast<int32_t>(ipow2(params_.bitsQ))) {
                     out.push_back(static_cast<uint8_t>(decodedIdx));
+                }
+                if (params_.debugMode) {
+                    std::cout << "🔍 [Отладка] Гипотеза 1: ошибка в h обнаружена, позиция бита: " << ePos 
+                              << ", декодировано: " << decodedIdx << "\n";
                 }
             }
         }
@@ -574,6 +587,14 @@ std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &cod
                 if (decodedIdx >= 0 && decodedIdx < static_cast<int32_t>(ipow2(params_.bitsQ))) {
                     out.push_back(static_cast<uint8_t>(decodedIdx));
                 }
+                if (params_.debugMode) {
+                    std::cout << "🔍 [Отладка] Гипотеза 2: ошибка в v обнаружена, позиция бита: " << ePos 
+                              << ", декодировано: " << decodedIdx << "\n";
+                }
+            } else {
+                if (params_.debugMode) {
+                    std::cout << "🔍 [Отладка] Гипотеза 2: ошибка в v не подтверждена, позиция не найдена\n";
+                }
             }
         }
         
@@ -586,6 +607,8 @@ std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &cod
             std::cout << "🔧 [Помехоустойчивость] Обнаружена и исправлена ошибка в блоке h: "
                       << "бит " << ePos << " инвертирован (было: " << h_before 
                       << ", стало: " << h << ")\n";
+        } else if (errPosDec == 1 && ePos == 0 && params_.debugMode) {
+            std::cout << "⚠️  [Отладка] Ошибка в блоке h обнаружена, но позиция бита не найдена (не удалось исправить)\n";
         }
         // исправление в v:
         if (errPosDec == 2 && ePos > 0) {
@@ -595,6 +618,8 @@ std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &cod
             std::cout << "🔧 [Помехоустойчивость] Обнаружена и исправлена ошибка в блоке v: "
                       << "бит " << ePos << " инвертирован (было: " << v_before 
                       << ", стало: " << v << ")\n";
+        } else if (errPosDec == 2 && ePos == 0 && params_.debugMode) {
+            std::cout << "⚠️  [Отладка] Ошибка в блоке v обнаружена, но позиция бита не найдена (не удалось исправить)\n";
         }
         
         // Обновление состояний декодера для следующего блока

@@ -127,6 +127,14 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
             '--h2', str(params['h2'])
         ]
         
+        # Добавляем параметры отладки и внесения ошибок
+        if params.get('debug', False):
+            cmd.append('--debug')
+        if params.get('injectErrors', False):
+            cmd.append('--inject-errors')
+            cmd.append('--error-rate')
+            cmd.append(str(params.get('errorRate', 0.01)))
+        
         if mode == 'msg':
             cmd.append('--msg')
         elif mode == 'file':

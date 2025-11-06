@@ -417,6 +417,9 @@ int main(int argc, char *argv[])
         if (arg == "--fun" && i + 1 < argc) { codec_params.funType = std::stoi(argv[++i]); continue; }
         if (arg == "--h1" && i + 1 < argc) { codec_params.h1 = std::stoi(argv[++i]); continue; }
         if (arg == "--h2" && i + 1 < argc) { codec_params.h2 = std::stoi(argv[++i]); continue; }
+        if (arg == "--debug") { codec_params.debugMode = true; continue; }
+        if (arg == "--inject-errors") { codec_params.injectErrors = true; continue; }
+        if (arg == "--error-rate" && i + 1 < argc) { codec_params.errorRate = std::stod(argv[++i]); continue; }
         positionals.push_back(arg);
     }
 
@@ -544,6 +547,9 @@ int main(int argc, char *argv[])
             std::cout << "🎛️  Цифровой кодек включён (M=" << codec_params.bitsM
                       << ", Q=" << codec_params.bitsQ << ", fun=" << codec_params.funType << ")\n";
             std::cout << "🛡️  Помехоустойчивый алгоритм активен: схема 1-1 с автоматическим исправлением ошибок\n";
+            if (codec_params.debugMode) {
+                std::cout << "🔍 Режим отладки включён: будет выводиться информация о проверке гипотез\n";
+            }
             
             // Устанавливаем глобальный указатель для обработчика сигналов
             g_codec_ptr = &codec;
