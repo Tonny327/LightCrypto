@@ -15,7 +15,7 @@
 #include "digital_codec.h"
 #include "file_transfer.h"
 
-constexpr size_t MAX_PACKET_SIZE = 8000;  // Увеличено для поддержки Custom Codec (коэффициент расширения ~4x)
+constexpr size_t MAX_PACKET_SIZE = 16000;  // Увеличено для поддержки Custom Codec (коэффициент расширения ~4x)
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
 constexpr size_t NONCE_SIZE = crypto_aead_chacha20poly1305_IETF_NPUBBYTES;
 constexpr size_t HASH_SIZE = crypto_hash_sha256_BYTES;
