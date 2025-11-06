@@ -14,6 +14,7 @@ namespace filetransfer {
 constexpr uint32_t MAGIC_FILE_HEADER = 0x46494C45;  // "FILE"
 constexpr uint32_t MAGIC_FILE_CHUNK = 0x43484E4B;   // "CHNK"
 constexpr uint32_t MAGIC_FILE_ACK = 0x41434B00;     // "ACK\0"
+constexpr uint32_t MAGIC_SYNC_REQUEST = 0x53594E43; // "SYNC" - запрос синхронизации
 
 // Размер чанка данных (без заголовков)
 constexpr size_t CHUNK_DATA_SIZE = 1400;  // Оставляем место для заголовков и шифрования
@@ -62,6 +63,14 @@ struct ChunkAck {
     ChunkAck() : magic(MAGIC_FILE_ACK), chunk_index(0), status(0) {}
 };
 
+// Структура запроса синхронизации состояний кодека
+struct SyncRequest {
+    uint32_t magic;           // Магическое число MAGIC_SYNC_REQUEST
+    uint32_t expected_chunk;  // Ожидаемый номер чанка (для диагностики)
+    
+    SyncRequest() : magic(MAGIC_SYNC_REQUEST), expected_chunk(0) {}
+};
+
 // Вычисление CRC32
 uint32_t crc32(const uint8_t* data, size_t length);
 
@@ -85,6 +94,12 @@ std::vector<uint8_t> serialize_ack(const ChunkAck& ack);
 
 // Десериализация подтверждения из байтов
 bool deserialize_ack(const uint8_t* data, size_t size, ChunkAck& ack);
+
+// Сериализация запроса синхронизации в байты
+std::vector<uint8_t> serialize_sync_request(const SyncRequest& request);
+
+// Десериализация запроса синхронизации из байтов
+bool deserialize_sync_request(const uint8_t* data, size_t size, SyncRequest& request);
 
 // Класс для управления отправкой файла
 class FileSender {

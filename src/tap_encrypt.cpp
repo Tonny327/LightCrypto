@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <cstring>
+#include <cerrno>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
@@ -21,6 +22,37 @@ constexpr size_t MAX_PACKET_SIZE = 16000;  // Увеличено для подд
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
 constexpr size_t NONCE_SIZE = crypto_aead_chacha20poly1305_IETF_NPUBBYTES;
 constexpr size_t HASH_SIZE = crypto_hash_sha256_BYTES;
+
+// Функция отправки синхронизации состояний кодека
+bool send_codec_sync(int sock, const sockaddr_in &dest_addr, digitalcodec::DigitalCodec *codec) {
+    std::vector<uint8_t> sync_packet;
+    sync_packet.push_back(0xFF); // Маркер синхронизации
+    sync_packet.push_back(0xFE);
+    sync_packet.push_back(0xFD);
+    sync_packet.push_back(0xFC);
+    
+    // Добавляем текущие состояния кодека (4 байта каждое, little-endian)
+    int32_t h1 = codec->get_enc_h1();
+    int32_t h2 = codec->get_enc_h2();
+    sync_packet.push_back(h1 & 0xFF);
+    sync_packet.push_back((h1 >> 8) & 0xFF);
+    sync_packet.push_back((h1 >> 16) & 0xFF);
+    sync_packet.push_back((h1 >> 24) & 0xFF);
+    sync_packet.push_back(h2 & 0xFF);
+    sync_packet.push_back((h2 >> 8) & 0xFF);
+    sync_packet.push_back((h2 >> 16) & 0xFF);
+    sync_packet.push_back((h2 >> 24) & 0xFF);
+    
+    // Отправляем пакет синхронизации
+    if (sendto(sock, sync_packet.data(), sync_packet.size(), 0, 
+              (sockaddr *)&dest_addr, sizeof(dest_addr)) < 0) {
+        std::cerr << "❌ Ошибка отправки синхронизации: " << strerror(errno) << "\n";
+        return false;
+    }
+    
+    std::cout << "🔄 Синхронизация состояний по запросу: h1=" << h1 << ", h2=" << h2 << "\n";
+    return true;
+}
 
 int open_tap(const std::string &dev_name)
 {
@@ -227,6 +259,10 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
 {
     std::cout << "📁 Начинаем отправку файла через кодек: " << file_path << "\n";
     
+    // Делаем сокет неблокирующим для обработки запросов синхронизации
+    int flags = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+    
     // Загружаем файл
     filetransfer::FileSender sender;
     if (!sender.load_file(file_path)) {
@@ -236,36 +272,13 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     // Запоминаем время начала передачи
     auto start_time = std::chrono::high_resolution_clock::now();
     
-    // 0. Синхронизируем состояния кодека с получателем
-    std::cout << "🔄 Синхронизация состояний кодека...\n";
-    
-    // Отправляем специальный пакет синхронизации состояний
-    std::vector<uint8_t> sync_packet;
-    sync_packet.push_back(0xFF); // Маркер синхронизации
-    sync_packet.push_back(0xFE);
-    sync_packet.push_back(0xFD);
-    sync_packet.push_back(0xFC);
-    
-    // Добавляем текущие состояния кодека (4 байта каждое)
-    int32_t h1 = codec->get_enc_h1();
-    int32_t h2 = codec->get_enc_h2();
-    sync_packet.push_back(h1 & 0xFF);
-    sync_packet.push_back((h1 >> 8) & 0xFF);
-    sync_packet.push_back((h1 >> 16) & 0xFF);
-    sync_packet.push_back((h1 >> 24) & 0xFF);
-    sync_packet.push_back(h2 & 0xFF);
-    sync_packet.push_back((h2 >> 8) & 0xFF);
-    sync_packet.push_back((h2 >> 16) & 0xFF);
-    sync_packet.push_back((h2 >> 24) & 0xFF);
-    
-    // Отправляем пакет синхронизации
-    if (sendto(sock, sync_packet.data(), sync_packet.size(), 0, 
-              (sockaddr *)&dest_addr, sizeof(dest_addr)) < 0) {
-        std::cerr << "❌ Ошибка отправки синхронизации: " << strerror(errno) << "\n";
+    // 0. Начальная синхронизация состояний кодека с получателем
+    std::cout << "🔄 Начальная синхронизация состояний кодека...\n";
+    if (!send_codec_sync(sock, dest_addr, codec)) {
+        std::cerr << "❌ Критическая ошибка: не удалось отправить начальную синхронизацию\n";
         return false;
     }
-    std::cout << "✅ Состояния кодека отправлены: h1=" << h1 << ", h2=" << h2 << "\n";
-    std::cout << "🔍 Размер пакета синхронизации: " << sync_packet.size() << " байт\n";
+    std::cout << "✅ Начальная синхронизация отправлена\n";
     
     // Ждем обработки синхронизации
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -294,11 +307,11 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
         // Сериализуем чанк
         auto chunk_bytes = filetransfer::serialize_chunk(chunk_header, chunk_data.data());
         
-        // ВАЖНО: Сбрасываем состояния кодека перед каждым чанком
-        // Это делает каждый чанк независимым и предотвращает накопление ошибок
-        codec->reset();
+        // ВАЖНО: НЕ сбрасываем состояния кодека - они эволюционируют между чанками
+        // Это уменьшает количество коллизий и повышает скорость передачи
+        // Восстановление после потерь обеспечивается запросами синхронизации от получателя
         
-        // Кодируем чанк
+        // Кодируем чанк (состояния продолжают эволюционировать)
         std::vector<uint8_t> framed_chunk = codec->encodeMessage(chunk_bytes);
         
         // DEBUG: Размеры пакетов (раскомментируйте при необходимости)
@@ -306,6 +319,31 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
         //           << " байт, закодирован: " << framed_chunk.size() << " байт\n";
         
         sendto(sock, framed_chunk.data(), framed_chunk.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+        
+        // ВАРИАНТ 1Б: Проверяем наличие запросов синхронизации (неблокирующий режим)
+        unsigned char recv_buffer[MAX_PACKET_SIZE];
+        sockaddr_in recv_addr{};
+        socklen_t recv_len = sizeof(recv_addr);
+        ssize_t nrecv = recvfrom(sock, recv_buffer, sizeof(recv_buffer), MSG_DONTWAIT,
+                                 (sockaddr *)&recv_addr, &recv_len);
+        
+        if (nrecv > 0) {
+            // Проверяем, это запрос синхронизации?
+            filetransfer::SyncRequest sync_req;
+            if (filetransfer::deserialize_sync_request(recv_buffer, nrecv, sync_req)) {
+                std::cout << "📥 Получен запрос синхронизации (ожидался чанк " 
+                          << sync_req.expected_chunk << ")\n";
+                std::cout << "🔄 Отправляем синхронизацию состояний...\n";
+                
+                // Отправляем синхронизацию состояний
+                if (send_codec_sync(sock, dest_addr, codec)) {
+                    std::cout << "✅ Синхронизация отправлена по запросу\n";
+                }
+            }
+        } else if (nrecv < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            // Игнорируем EAGAIN/EWOULDBLOCK (нет данных), но логируем другие ошибки
+            // std::cerr << "⚠️  Ошибка при проверке запросов синхронизации: " << strerror(errno) << "\n";
+        }
         
         // Показываем прогресс
         float progress = (100.0f * (i + 1)) / total_chunks;
@@ -324,6 +362,9 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     double file_size_mb = sender.get_header().file_size / (1024.0 * 1024.0);
     double speed_mbps = (seconds > 0) ? (file_size_mb / seconds) : 0.0;
     double speed_mbitps = speed_mbps * 8.0; // Конвертируем МБ/сек в Мбит/сек
+    
+    // Восстанавливаем блокирующий режим сокета
+    fcntl(sock, F_SETFL, flags);
     
     std::cout << "✅ Все чанки отправлены успешно через кодек!\n";
     std::cout << "⏱️  Время передачи: " << std::fixed << std::setprecision(2) << seconds << " сек\n";

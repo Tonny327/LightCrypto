@@ -149,6 +149,27 @@ bool deserialize_ack(const uint8_t* data, size_t size, ChunkAck& ack) {
     return true;
 }
 
+std::vector<uint8_t> serialize_sync_request(const SyncRequest& request) {
+    std::vector<uint8_t> result;
+    const uint8_t* request_bytes = reinterpret_cast<const uint8_t*>(&request);
+    result.insert(result.end(), request_bytes, request_bytes + sizeof(SyncRequest));
+    return result;
+}
+
+bool deserialize_sync_request(const uint8_t* data, size_t size, SyncRequest& request) {
+    if (size < sizeof(SyncRequest)) {
+        return false;
+    }
+    
+    std::memcpy(&request, data, sizeof(SyncRequest));
+    
+    if (request.magic != MAGIC_SYNC_REQUEST) {
+        return false;
+    }
+    
+    return true;
+}
+
 // FileSender implementation
 bool FileSender::load_file(const std::string& filepath) {
     // Открываем файл
