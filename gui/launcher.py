@@ -216,7 +216,7 @@ class LauncherWindow:
     def _on_closing(self):
         """Обработка закрытия окна"""
         self._save_geometry()
-        self.root.quit()
+        self.root.destroy()
     
     def _save_geometry(self):
         """Сохранение геометрии окна"""

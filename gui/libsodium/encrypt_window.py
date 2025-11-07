@@ -345,6 +345,8 @@ class LibSodiumEncryptGUI:
         frame.pack(fill=tk.BOTH, expand=True, padx=PADDING_SECTION, pady=PADDING_SECTION)
         
         self.terminal = EmbeddedTerminal(frame, self)
+        # Устанавливаем callback для обновления кнопки при завершении процесса
+        self.terminal.on_process_finished = self._on_process_finished
     
     def _create_utils_panel(self, parent):
         """Панель тестовых утилит"""
@@ -602,6 +604,18 @@ class LibSodiumEncryptGUI:
         self.terminal.show_input_field(False)
         
         # Обновление кнопки
+        self._reset_start_button()
+    
+    def _on_process_finished(self):
+        """Callback при завершении процесса (автоматическом или ручном)"""
+        # Скрыть поле ввода
+        self.terminal.show_input_field(False)
+        
+        # Обновление кнопки
+        self._reset_start_button()
+    
+    def _reset_start_button(self):
+        """Сброс кнопки запуска в исходное состояние"""
         self.start_button.config(
             text=f"{EMOJI_PLAY} ЗАПУСТИТЬ ШИФРОВАНИЕ",
             bg=COLOR_SUCCESS
