@@ -209,6 +209,30 @@ class ConfigManager:
         """Сохранить состояние чекбокса 'Авто из CSV'"""
         self.set('custom_auto_q', enabled)
     
+    def get_custom_debug(self) -> bool:
+        """Получить состояние режима отладки"""
+        return self.get('custom_debug', False)
+    
+    def set_custom_debug(self, enabled: bool):
+        """Сохранить состояние режима отладки"""
+        self.set('custom_debug', enabled)
+    
+    def get_custom_inject_errors(self) -> bool:
+        """Получить состояние внесения ошибок"""
+        return self.get('custom_inject_errors', False)
+    
+    def set_custom_inject_errors(self, enabled: bool):
+        """Сохранить состояние внесения ошибок"""
+        self.set('custom_inject_errors', enabled)
+    
+    def get_custom_error_rate(self) -> float:
+        """Получить вероятность ошибки (в процентах)"""
+        return self.get('custom_error_rate', 1.0)
+    
+    def set_custom_error_rate(self, rate: float):
+        """Сохранить вероятность ошибки (в процентах)"""
+        self.set('custom_error_rate', rate)
+    
     # === Методы для файлового режима ===
     
     def get_last_file_dir(self) -> str:

@@ -210,7 +210,7 @@ class RoleSelectorWindow:
     
     def _on_closing(self):
         """Обработка закрытия окна"""
-        self.root.quit()
+        self.root.destroy()
     
     def run(self):
         """Запуск главного цикла окна"""

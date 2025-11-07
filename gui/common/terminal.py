@@ -43,6 +43,7 @@ class EmbeddedTerminal:
         self.master_fd = None
         self.read_thread = None
         self.running = False
+        self.on_process_finished = None  # Callback при завершении процесса
         
         # Создание контейнера
         self.container = tk.Frame(parent_widget, bg=COLOR_BACKGROUND)
@@ -311,6 +312,9 @@ class EmbeddedTerminal:
         finally:
             self.running = False
             self.print_to_terminal("📡 Процесс завершен", 'info')
+            # Вызываем callback при завершении процесса
+            if self.on_process_finished:
+                self.parent.after(0, self.on_process_finished)
     
     def _read_process_output_pty(self):
         """Чтение вывода процесса через PTY"""
@@ -377,6 +381,9 @@ class EmbeddedTerminal:
                     pass
                 self.master_fd = None
             self.print_to_terminal("📡 Процесс завершен", 'info')
+            # Вызываем callback при завершении процесса
+            if self.on_process_finished:
+                self.parent.after(0, self.on_process_finished)
     
     def _strip_ansi(self, text: str) -> str:
         """Удаление ANSI escape sequences"""
@@ -418,6 +425,9 @@ class EmbeddedTerminal:
                 except:
                     pass
                 self.master_fd = None
+            # Вызываем callback при остановке процесса
+            if self.on_process_finished:
+                self.parent.after(0, self.on_process_finished)
     
     def _bind_mouse_wheel(self, widget):
         """
