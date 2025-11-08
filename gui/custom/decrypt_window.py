@@ -109,10 +109,6 @@ class CustomCodecDecryptGUI(LibSodiumDecryptGUI):
             '--h2', str(params['h2'])
         ]
         
-        # Добавляем параметры отладки (внесение ошибок только на стороне отправителя)
-        if params.get('debug', False):
-            cmd.append('--debug')
-        
         if mode == 'msg':
             cmd.append('--msg')
         elif mode == 'file':
