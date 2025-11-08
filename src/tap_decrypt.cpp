@@ -97,21 +97,30 @@ void send_frames_codec(int tap_fd, int sock, const sockaddr_in &dest_addr, digit
 }
 
 // Функция приема файла через libsodium
-bool receive_file_libsodium(int sock, const std::vector<unsigned char> &rx_key, const std::string &output_path)
+bool receive_file_libsodium(int sock, const std::vector<unsigned char> &rx_key, const std::vector<unsigned char> &tx_key, const std::string &output_path)
 {
     std::cout << "📥 Ожидание файла через libsodium...\n";
     
     filetransfer::FileReceiver receiver;
     bool header_received = false;
     std::string filename;
+    sockaddr_in sender_addr{};
+    socklen_t sender_len = sizeof(sender_addr);
+    bool sender_addr_known = false;
     auto start_time = std::chrono::high_resolution_clock::now();
     
     while (true) {
         unsigned char buffer[MAX_PACKET_SIZE];
-        ssize_t nrecv = recv(sock, buffer, sizeof(buffer), 0);
+        ssize_t nrecv = recvfrom(sock, buffer, sizeof(buffer), 0,
+                                (sockaddr *)&sender_addr, &sender_len);
         
         if (nrecv <= NONCE_SIZE) {
             continue;
+        }
+        
+        // Сохраняем адрес отправителя при первом пакете
+        if (!sender_addr_known) {
+            sender_addr_known = true;
         }
         
         // Расшифровываем пакет
@@ -140,6 +149,32 @@ bool receive_file_libsodium(int sock, const std::vector<unsigned char> &rx_key, 
                 std::cout << "📥 Получен заголовок файла: " << filename << "\n";
                 receiver.initialize(header, filename);
                 header_received = true;
+                
+                // Отправляем ACK для заголовка (chunk_index=0)
+                filetransfer::ChunkAck header_ack;
+                header_ack.chunk_index = 0;
+                header_ack.status = 0; // OK
+                auto ack_bytes = filetransfer::serialize_ack(header_ack);
+                
+                // Шифруем ACK
+                std::vector<unsigned char> ack_nonce(NONCE_SIZE);
+                randombytes_buf(ack_nonce.data(), ack_nonce.size());
+                std::vector<unsigned char> encrypted_ack(ack_bytes.size() + crypto_aead_chacha20poly1305_IETF_ABYTES);
+                unsigned long long encrypted_ack_len = 0;
+                
+                crypto_aead_chacha20poly1305_ietf_encrypt(
+                    encrypted_ack.data(), &encrypted_ack_len,
+                    ack_bytes.data(), ack_bytes.size(),
+                    nullptr, 0, nullptr,
+                    ack_nonce.data(), tx_key.data());
+                
+                std::vector<unsigned char> ack_packet;
+                ack_packet.insert(ack_packet.end(), ack_nonce.begin(), ack_nonce.end());
+                ack_packet.insert(ack_packet.end(), encrypted_ack.begin(), encrypted_ack.begin() + encrypted_ack_len);
+                
+                sendto(sock, ack_packet.data(), ack_packet.size(), 0,
+                      (sockaddr *)&sender_addr, sender_len);
+                std::cout << "✅ ACK заголовка отправлен\n";
                 continue;
             }
         }
@@ -149,7 +184,41 @@ bool receive_file_libsodium(int sock, const std::vector<unsigned char> &rx_key, 
         std::vector<uint8_t> chunk_data;
         
         if (filetransfer::deserialize_chunk(decrypted.data(), decrypted_len, chunk_header, chunk_data)) {
+            // Проверяем, не был ли чанк уже получен (add_chunk сам проверяет дубликаты)
             receiver.add_chunk(chunk_header, chunk_data);
+            
+            // Отправляем ACK для чанка
+            filetransfer::ChunkAck chunk_ack;
+            chunk_ack.chunk_index = chunk_header.chunk_index;
+            chunk_ack.status = 0; // OK
+            auto ack_bytes = filetransfer::serialize_ack(chunk_ack);
+            
+            // Шифруем ACK
+            std::vector<unsigned char> ack_nonce(NONCE_SIZE);
+            randombytes_buf(ack_nonce.data(), ack_nonce.size());
+            std::vector<unsigned char> encrypted_ack(ack_bytes.size() + crypto_aead_chacha20poly1305_IETF_ABYTES);
+            unsigned long long encrypted_ack_len = 0;
+            
+            crypto_aead_chacha20poly1305_ietf_encrypt(
+                encrypted_ack.data(), &encrypted_ack_len,
+                ack_bytes.data(), ack_bytes.size(),
+                nullptr, 0, nullptr,
+                ack_nonce.data(), tx_key.data());
+            
+            std::vector<unsigned char> ack_packet;
+            ack_packet.insert(ack_packet.end(), ack_nonce.begin(), ack_nonce.end());
+            ack_packet.insert(ack_packet.end(), encrypted_ack.begin(), encrypted_ack.begin() + encrypted_ack_len);
+            
+            sendto(sock, ack_packet.data(), ack_packet.size(), 0,
+                  (sockaddr *)&sender_addr, sender_len);
+            
+            // Показываем прогресс
+            uint32_t total_chunks = receiver.get_total_chunks();
+            uint32_t received_count = receiver.get_received_count();
+            float progress = (100.0f * received_count) / total_chunks;
+            std::cout << "📥 Получен чанк " << received_count << "/" << total_chunks 
+                      << " (" << chunk_header.data_size << " байт, "
+                      << std::fixed << std::setprecision(1) << progress << "%) ✅\n";
             
             // Проверяем, все ли чанки получены
             if (receiver.is_complete()) {
@@ -276,6 +345,17 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
                 std::cout << "📥 Получен заголовок файла через кодек: " << filename << "\n";
                 receiver.initialize(header, filename);
                 header_received = true;
+                
+                // Отправляем ACK для заголовка (chunk_index=0)
+                filetransfer::ChunkAck header_ack;
+                header_ack.chunk_index = 0;
+                header_ack.status = 0; // OK
+                auto ack_bytes = filetransfer::serialize_ack(header_ack);
+                
+                // Отправляем ACK напрямую (без кодирования, служебный пакет)
+                sendto(sock, ack_bytes.data(), ack_bytes.size(), 0,
+                      (sockaddr *)&sender_addr, sender_len);
+                std::cout << "✅ ACK заголовка отправлен\n";
                 continue;
             } else {
                 // DEBUG: Парсинг заголовков (раскомментируйте при необходимости)
@@ -320,7 +400,37 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
             }
             // Если chunk_index < expected_chunk_index - это дубликат, игнорируем обновление
             
-            receiver.add_chunk(chunk_header, chunk_data);
+            // Проверяем, не был ли чанк уже получен
+            bool is_new_chunk = true;
+            if (receiver.get_received_count() > 0) {
+                std::vector<uint32_t> missing = receiver.get_missing_chunks();
+                bool is_duplicate = true;
+                for (uint32_t missing_idx : missing) {
+                    if (missing_idx == chunk_header.chunk_index) {
+                        is_duplicate = false;
+                        break;
+                    }
+                }
+                if (is_duplicate && chunk_header.chunk_index < receiver.get_total_chunks()) {
+                    // Дубликат - отправляем ACK, но не добавляем чанк
+                    is_new_chunk = false;
+                    std::cout << "⚠️  Получен дубликат чанка " << chunk_header.chunk_index << ", отправляем ACK\n";
+                } else {
+                    receiver.add_chunk(chunk_header, chunk_data);
+                }
+            } else {
+                receiver.add_chunk(chunk_header, chunk_data);
+            }
+            
+            // Отправляем ACK для чанка
+            filetransfer::ChunkAck chunk_ack;
+            chunk_ack.chunk_index = chunk_header.chunk_index;
+            chunk_ack.status = 0; // OK
+            auto ack_bytes = filetransfer::serialize_ack(chunk_ack);
+            
+            // Отправляем ACK напрямую (без кодирования, служебный пакет)
+            sendto(sock, ack_bytes.data(), ack_bytes.size(), 0,
+                  (sockaddr *)&sender_addr, sender_len);
             
             // Показываем прогресс получения
             uint32_t total_chunks = receiver.get_total_chunks();
@@ -328,7 +438,7 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
             float progress = (100.0f * received_count) / total_chunks;
             std::cout << "📥 Получен чанк " << received_count << "/" << total_chunks 
                       << " (" << chunk_header.data_size << " байт, "
-                      << std::fixed << std::setprecision(1) << progress << "%)\n";
+                      << std::fixed << std::setprecision(1) << progress << "%) ✅\n";
             
             // Проверяем, все ли чанки получены
             if (receiver.is_complete()) {
@@ -539,7 +649,7 @@ int main(int argc, char *argv[])
         }
         else
         {
-            if (!receive_file_libsodium(sock, rx_key, output_path)) {
+            if (!receive_file_libsodium(sock, rx_key, tx_key, output_path)) {
                 std::cerr << "❌ Ошибка при приёме файла через libsodium\n";
                 close(sock);
                 if (tap_fd >= 0) close(tap_fd);
