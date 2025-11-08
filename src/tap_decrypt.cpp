@@ -291,9 +291,7 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
     bool header_received = false;
     bool initial_sync_received = false;
     std::string filename;
-    // В режиме sliding window не используем expected_chunk_index для обнаружения пропусков
-    // Чанки могут приходить не по порядку - это нормально
-    sockaddr_in sender_addr{};          // Адрес отправителя (для отправки запросов)
+    sockaddr_in sender_addr{};          // Адрес отправителя (для отправки ACK)
     socklen_t sender_len = sizeof(sender_addr);
     bool sender_addr_known = false;
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -405,10 +403,6 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
         // std::cout << "🔍 Пытаемся распарсить как чанк (размер: " << decoded_bytes.size() << " байт)...\n";
         
         if (filetransfer::deserialize_chunk(decoded_bytes.data(), decoded_bytes.size(), chunk_header, chunk_data)) {
-            // В режиме sliding window чанки могут приходить не по порядку - это нормально
-            // Запрос синхронизации отправляется только при ошибках декодирования (выше в коде)
-            // Не используем expected_chunk_index для обнаружения пропусков в sliding window режиме
-            
             // Проверяем, не был ли чанк уже получен
             bool is_new_chunk = true;
             if (receiver.get_received_count() > 0) {

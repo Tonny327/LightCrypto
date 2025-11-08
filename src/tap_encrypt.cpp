@@ -310,7 +310,7 @@ bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vect
                 }
             }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     
     if (!header_ack_received) {
@@ -451,7 +451,7 @@ bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vect
 
 // Функция отправки файла через кодек
 bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::DigitalCodec *codec,
-                     const std::string &file_path, const digitalcodec::CodecParams &codec_params)
+                     const std::string &file_path)
 {
     std::cout << "📁 Начинаем отправку файла через кодек: " << file_path << "\n";
     
@@ -462,6 +462,7 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     // Загружаем файл
     filetransfer::FileSender sender;
     if (!sender.load_file(file_path)) {
+        fcntl(sock, F_SETFL, flags);
         return false;
     }
     
@@ -472,6 +473,7 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     std::cout << "🔄 Начальная синхронизация состояний кодека...\n";
     if (!send_codec_sync(sock, dest_addr, codec)) {
         std::cerr << "❌ Критическая ошибка: не удалось отправить начальную синхронизацию\n";
+        fcntl(sock, F_SETFL, flags);
         return false;
     }
     std::cout << "✅ Начальная синхронизация отправлена\n";
@@ -479,11 +481,6 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     // 1. Отправляем заголовок файла
     auto header_bytes = filetransfer::serialize_file_header(sender.get_header(), sender.get_filename());
     std::vector<uint8_t> framed_header = codec->encodeMessage(header_bytes);
-    
-    // Искусственное внесение ошибок для тестирования (если включено)
-    if (codec_params.injectErrors) {
-        framed_header = inject_errors(framed_header, codec_params.errorRate, codec_params.bitsM);
-    }
     
     sendto(sock, framed_header.data(), framed_header.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
     std::cout << "📤 Заголовок файла отправлен через кодек, ожидаем ACK...\n";
@@ -499,17 +496,30 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
                                  (sockaddr *)&ack_addr, &ack_len);
         
         if (nrecv > 0) {
+            // Проверяем, это запрос синхронизации?
+            filetransfer::SyncRequest sync_req;
+            if (filetransfer::deserialize_sync_request(ack_buffer, nrecv, sync_req)) {
+                std::cout << "📥 Получен запрос синхронизации (ожидался чанк " 
+                          << sync_req.expected_chunk << ")\n";
+                std::cout << "🔄 Отправляем синхронизацию состояний...\n";
+                
+                if (send_codec_sync(sock, dest_addr, codec)) {
+                    std::cout << "✅ Синхронизация отправлена по запросу\n";
+                }
+                continue;
+            }
+            
             // Проверяем, это ACK?
             filetransfer::ChunkAck ack;
             if (filetransfer::deserialize_ack(ack_buffer, nrecv, ack)) {
-                if (ack.chunk_index == 0 && ack.status == 0) { // ACK для заголовка
+                if (ack.chunk_index == 0 && ack.status == 0) {
                     header_ack_received = true;
                     std::cout << "✅ ACK заголовка получен\n";
                     break;
                 }
             }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     
     if (!header_ack_received) {
@@ -539,11 +549,6 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
         
         // Кодируем чанк (состояния продолжают эволюционировать)
         std::vector<uint8_t> framed_chunk = codec->encodeMessage(chunk_bytes);
-        
-        // Искусственное внесение ошибок для тестирования (если включено)
-        if (codec_params.injectErrors) {
-            framed_chunk = inject_errors(framed_chunk, codec_params.errorRate, codec_params.bitsM);
-        }
         
         // Отправляем чанк с повторными попытками
         bool chunk_ack_received = false;
@@ -821,7 +826,7 @@ int main(int argc, char *argv[])
         // Режим передачи файлов
         if (use_codec)
         {
-            if (!send_file_codec(sock, dest_addr, &codec, file_path, codec_params)) {
+            if (!send_file_codec(sock, dest_addr, &codec, file_path)) {
                 std::cerr << "❌ Ошибка при отправке файла через кодек\n";
                 close(sock);
                 return 1;
