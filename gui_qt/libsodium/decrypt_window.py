@@ -142,11 +142,12 @@ class LibSodiumDecryptGUI(BaseWindow):
         file_layout = QVBoxLayout(self.file_output_frame)
         file_layout.setContentsMargins(0, 0, 0, 0)
         
-        output_label = QLabel("Путь для сохранения (необязательно):")
+        output_label = QLabel("Путь/имя файла для сохранения (необязательно):")
         file_layout.addWidget(output_label)
         
         output_entry_layout = QHBoxLayout()
         self.output_entry = QLineEdit()
+        self.output_entry.setPlaceholderText("Например: /home/user/output/received_file.png")
         self.output_entry.setToolTip(TOOLTIP_FILE_OUTPUT)
         output_entry_layout.addWidget(self.output_entry)
         
@@ -370,8 +371,10 @@ class LibSodiumDecryptGUI(BaseWindow):
     def _stop_encryption(self):
         """Остановка расшифровки"""
         self.terminal.stop_process()
-        
-        # Обновление кнопки
+        self._reset_after_process_end()
+
+    def _reset_after_process_end(self):
+        """Сброс состояния интерфейса после завершения процесса"""
         self.start_button.setText(f"{EMOJI_PLAY} ЗАПУСТИТЬ РАСШИФРОВКУ")
         self.start_button.setProperty("class", "success")
         self.start_button.style().unpolish(self.start_button)
@@ -408,23 +411,23 @@ class LibSodiumDecryptGUI(BaseWindow):
                 )
     
     def _browse_output(self):
-        """Выбор директории для сохранения файла"""
+        """Выбор пути и имени файла для сохранения"""
         initial_dir = self.config.get_last_output_dir()
-        
-        dirpath = QFileDialog.getExistingDirectory(
+        filepath, _ = QFileDialog.getSaveFileName(
             self,
-            "Выберите директорию для сохранения файла",
-            initial_dir
+            "Выберите имя и формат сохраняемого файла",
+            initial_dir,
+            "Все файлы (*.*);;Изображения (*.png *.jpg *.jpeg *.gif *.bmp);;Документы (*.pdf *.doc *.docx *.txt);;Архивы (*.zip *.rar *.7z *.tar *.gz)"
         )
-        
-        if dirpath:
-            self.output_entry.setText(dirpath)
+
+        if filepath:
+            self.output_entry.setText(filepath)
             # Сохранить директорию
-            self.config.set_last_output_dir(dirpath)
+            self.config.set_last_output_dir(os.path.dirname(filepath))
             self.config.save()
-            
+
             self.terminal.print_to_terminal(
-                f"{EMOJI_FOLDER} Выбрана директория: {dirpath}",
+                f"{EMOJI_FOLDER} Файл будет сохранен как: {filepath}",
                 'success'
             )
     
@@ -476,4 +479,8 @@ class LibSodiumDecryptGUI(BaseWindow):
     def run(self):
         """Запуск главного цикла окна"""
         self.show()
+
+    def on_terminal_process_finished(self):
+        """Callback от встроенного терминала при завершении процесса"""
+        self._reset_after_process_end()
 

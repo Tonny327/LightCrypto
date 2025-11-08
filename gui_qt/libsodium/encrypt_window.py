@@ -404,10 +404,13 @@ class LibSodiumEncryptGUI(BaseWindow):
     def _stop_encryption(self):
         """Остановка шифрования"""
         self.terminal.stop_process()
-        
+        self._reset_after_process_end()
+
+    def _reset_after_process_end(self):
+        """Сброс состояния интерфейса после завершения процесса"""
         # Скрыть поле ввода
         self.terminal.show_input_field(False)
-        
+
         # Обновление кнопки
         self.start_button.setText(f"{EMOJI_PLAY} ЗАПУСТИТЬ ШИФРОВАНИЕ")
         self.start_button.setProperty("class", "success")
@@ -520,4 +523,8 @@ class LibSodiumEncryptGUI(BaseWindow):
     def run(self):
         """Запуск главного цикла окна"""
         self.show()
+
+    def on_terminal_process_finished(self):
+        """Callback от встроенного терминала при завершении процесса"""
+        self._reset_after_process_end()
 

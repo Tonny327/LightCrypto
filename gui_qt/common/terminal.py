@@ -325,6 +325,11 @@ class EmbeddedTerminal(QWidget):
             except:
                 pass
             self.master_fd = None
+        if self.parent_gui and hasattr(self.parent_gui, 'on_terminal_process_finished'):
+            try:
+                self.parent_gui.on_terminal_process_finished()
+            except Exception as exc:
+                self.print_to_terminal(f"⚠️  Ошибка post-stop callback: {exc}", 'warning')
     
     def stop_process(self):
         """Остановка запущенного процесса"""
