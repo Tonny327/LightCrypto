@@ -219,9 +219,13 @@ void receive_frames_codec(int tap_fd, int sock, digitalcodec::DigitalCodec *code
 
 // Функция отправки файла через libsodium
 bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vector<unsigned char> &tx_key,
-                          const std::string &file_path)
+                          const std::vector<unsigned char> &rx_key, const std::string &file_path)
 {
     std::cout << "📁 Начинаем отправку файла: " << file_path << "\n";
+    
+    // Делаем сокет неблокирующим для обработки ACK
+    int flags = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
     
     // Загружаем файл
     filetransfer::FileSender sender;
@@ -253,12 +257,69 @@ bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vect
     packet.insert(packet.end(), encrypted_header.begin(), encrypted_header.begin() + encrypted_len);
     
     sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
-    std::cout << "📤 Заголовок файла отправлен\n";
+    std::cout << "📤 Заголовок файла отправлен, ожидаем ACK...\n";
     
-    // Небольшая задержка для обработки заголовка
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Ждем ACK для заголовка
+    bool header_ack_received = false;
+    auto header_ack_timeout = std::chrono::steady_clock::now() + std::chrono::milliseconds(filetransfer::ACK_TIMEOUT_MS);
+    while (!header_ack_received && std::chrono::steady_clock::now() < header_ack_timeout) {
+        unsigned char ack_buffer[MAX_PACKET_SIZE];
+        sockaddr_in ack_addr{};
+        socklen_t ack_len = sizeof(ack_addr);
+        ssize_t nrecv = recvfrom(sock, ack_buffer, sizeof(ack_buffer), MSG_DONTWAIT,
+                                 (sockaddr *)&ack_addr, &ack_len);
+        
+        if (nrecv > NONCE_SIZE) {
+            // Проверяем разумный размер ACK пакета (ChunkAck ~12 байт + ABYTES ~16 байт + запас)
+            const size_t max_ack_size = 1024;
+            if (nrecv > NONCE_SIZE + max_ack_size) {
+                // Слишком большой пакет, пропускаем
+                continue;
+            }
+            
+            // Расшифровываем ACK
+            std::vector<unsigned char> ack_nonce(ack_buffer, ack_buffer + NONCE_SIZE);
+            size_t ciphertext_size = nrecv - NONCE_SIZE;
+            std::vector<unsigned char> ack_ciphertext(ack_buffer + NONCE_SIZE, ack_buffer + nrecv);
+            
+            // Максимальный размер расшифрованных данных (ciphertext_size - ABYTES)
+            size_t max_decrypted_size = (ciphertext_size > crypto_aead_chacha20poly1305_IETF_ABYTES) 
+                                        ? (ciphertext_size - crypto_aead_chacha20poly1305_IETF_ABYTES)
+                                        : 0;
+            if (max_decrypted_size == 0 || max_decrypted_size > max_ack_size) {
+                continue;
+            }
+            
+            std::vector<unsigned char> ack_decrypted(max_decrypted_size);
+            unsigned long long ack_decrypted_len = 0;
+            
+            if (crypto_aead_chacha20poly1305_ietf_decrypt(
+                    ack_decrypted.data(), &ack_decrypted_len,
+                    nullptr,
+                    ack_ciphertext.data(), ack_ciphertext.size(),
+                    nullptr, 0,
+                    ack_nonce.data(), rx_key.data()) == 0) {
+                
+                filetransfer::ChunkAck ack;
+                if (filetransfer::deserialize_ack(ack_decrypted.data(), ack_decrypted_len, ack)) {
+                    if (ack.chunk_index == 0 && ack.status == 0) { // ACK для заголовка (chunk_index=0)
+                        header_ack_received = true;
+                        std::cout << "✅ ACK заголовка получен\n";
+                        break;
+                    }
+                }
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     
-    // 2. Отправляем чанки
+    if (!header_ack_received) {
+        std::cerr << "❌ Таймаут ожидания ACK заголовка\n";
+        fcntl(sock, F_SETFL, flags);
+        return false;
+    }
+    
+    // 2. Отправляем чанки с ожиданием ACK
     uint32_t total_chunks = sender.get_total_chunks();
     for (uint32_t i = 0; i < total_chunks; i++) {
         filetransfer::ChunkHeader chunk_header;
@@ -266,6 +327,7 @@ bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vect
         
         if (!sender.get_chunk(i, chunk_header, chunk_data)) {
             std::cerr << "❌ Ошибка получения чанка " << i << "\n";
+            fcntl(sock, F_SETFL, flags);
             return false;
         }
         
@@ -287,17 +349,90 @@ bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vect
         packet.insert(packet.end(), nonce.begin(), nonce.end());
         packet.insert(packet.end(), encrypted_chunk.begin(), encrypted_chunk.begin() + encrypted_len);
         
-        sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+        // Отправляем чанк с повторными попытками
+        bool chunk_ack_received = false;
+        int retry_count = 0;
+        const int max_retries = filetransfer::MAX_RETRIES;
+        
+        while (!chunk_ack_received && retry_count <= max_retries) {
+            if (retry_count > 0) {
+                std::cout << "🔄 Повторная отправка чанка " << (i + 1) << " (попытка " << (retry_count + 1) << ")\n";
+            }
+            
+            sendto(sock, packet.data(), packet.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+            
+            // Ждем ACK для чанка
+            auto chunk_ack_timeout = std::chrono::steady_clock::now() + std::chrono::milliseconds(filetransfer::ACK_TIMEOUT_MS);
+            while (!chunk_ack_received && std::chrono::steady_clock::now() < chunk_ack_timeout) {
+                unsigned char ack_buffer[MAX_PACKET_SIZE];
+                sockaddr_in ack_addr{};
+                socklen_t ack_len = sizeof(ack_addr);
+                ssize_t nrecv = recvfrom(sock, ack_buffer, sizeof(ack_buffer), MSG_DONTWAIT,
+                                         (sockaddr *)&ack_addr, &ack_len);
+                
+                if (nrecv > NONCE_SIZE) {
+                    // Проверяем разумный размер ACK пакета
+                    const size_t max_ack_size = 1024;
+                    if (nrecv > NONCE_SIZE + max_ack_size) {
+                        // Слишком большой пакет, пропускаем
+                        continue;
+                    }
+                    
+                    // Расшифровываем ACK
+                    std::vector<unsigned char> ack_nonce(ack_buffer, ack_buffer + NONCE_SIZE);
+                    size_t ciphertext_size = nrecv - NONCE_SIZE;
+                    std::vector<unsigned char> ack_ciphertext(ack_buffer + NONCE_SIZE, ack_buffer + nrecv);
+                    
+                    // Максимальный размер расшифрованных данных
+                    size_t max_decrypted_size = (ciphertext_size > crypto_aead_chacha20poly1305_IETF_ABYTES) 
+                                                ? (ciphertext_size - crypto_aead_chacha20poly1305_IETF_ABYTES)
+                                                : 0;
+                    if (max_decrypted_size == 0 || max_decrypted_size > max_ack_size) {
+                        continue;
+                    }
+                    
+                    std::vector<unsigned char> ack_decrypted(max_decrypted_size);
+                    unsigned long long ack_decrypted_len = 0;
+                    
+                    if (crypto_aead_chacha20poly1305_ietf_decrypt(
+                            ack_decrypted.data(), &ack_decrypted_len,
+                            nullptr,
+                            ack_ciphertext.data(), ack_ciphertext.size(),
+                            nullptr, 0,
+                            ack_nonce.data(), rx_key.data()) == 0) {
+                        
+                        filetransfer::ChunkAck ack;
+                        if (filetransfer::deserialize_ack(ack_decrypted.data(), ack_decrypted_len, ack)) {
+                            if (ack.chunk_index == i && ack.status == 0) {
+                                chunk_ack_received = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            
+            if (!chunk_ack_received) {
+                retry_count++;
+            }
+        }
+        
+        if (!chunk_ack_received) {
+            std::cerr << "❌ Не удалось получить ACK для чанка " << (i + 1) << " после " << max_retries << " попыток\n";
+            fcntl(sock, F_SETFL, flags);
+            return false;
+        }
         
         // Показываем прогресс
         float progress = (100.0f * (i + 1)) / total_chunks;
         std::cout << "📤 Отправлен чанк " << (i + 1) << "/" << total_chunks 
                   << " (" << chunk_header.data_size << " байт, "
-                  << std::fixed << std::setprecision(1) << progress << "%)\n";
-        
-        // Небольшая задержка между чанками
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
+                  << std::fixed << std::setprecision(1) << progress << "%) ✅\n";
     }
+    
+    // Восстанавливаем блокирующий режим сокета
+    fcntl(sock, F_SETFL, flags);
     
     // Вычисляем время передачи и скорость
     auto end_time = std::chrono::high_resolution_clock::now();
@@ -341,9 +476,6 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     }
     std::cout << "✅ Начальная синхронизация отправлена\n";
     
-    // Ждем обработки синхронизации
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    
     // 1. Отправляем заголовок файла
     auto header_bytes = filetransfer::serialize_file_header(sender.get_header(), sender.get_filename());
     std::vector<uint8_t> framed_header = codec->encodeMessage(header_bytes);
@@ -354,12 +486,39 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     }
     
     sendto(sock, framed_header.data(), framed_header.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
-    std::cout << "📤 Заголовок файла отправлен через кодек\n";
+    std::cout << "📤 Заголовок файла отправлен через кодек, ожидаем ACK...\n";
     
-    // Небольшая задержка для обработки заголовка
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Ждем ACK для заголовка
+    bool header_ack_received = false;
+    auto header_ack_timeout = std::chrono::steady_clock::now() + std::chrono::milliseconds(filetransfer::ACK_TIMEOUT_MS);
+    while (!header_ack_received && std::chrono::steady_clock::now() < header_ack_timeout) {
+        unsigned char ack_buffer[MAX_PACKET_SIZE];
+        sockaddr_in ack_addr{};
+        socklen_t ack_len = sizeof(ack_addr);
+        ssize_t nrecv = recvfrom(sock, ack_buffer, sizeof(ack_buffer), MSG_DONTWAIT,
+                                 (sockaddr *)&ack_addr, &ack_len);
+        
+        if (nrecv > 0) {
+            // Проверяем, это ACK?
+            filetransfer::ChunkAck ack;
+            if (filetransfer::deserialize_ack(ack_buffer, nrecv, ack)) {
+                if (ack.chunk_index == 0 && ack.status == 0) { // ACK для заголовка
+                    header_ack_received = true;
+                    std::cout << "✅ ACK заголовка получен\n";
+                    break;
+                }
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
     
-    // 2. Отправляем чанки
+    if (!header_ack_received) {
+        std::cerr << "❌ Таймаут ожидания ACK заголовка\n";
+        fcntl(sock, F_SETFL, flags);
+        return false;
+    }
+    
+    // 2. Отправляем чанки с ожиданием ACK
     uint32_t total_chunks = sender.get_total_chunks();
     for (uint32_t i = 0; i < total_chunks; i++) {
         filetransfer::ChunkHeader chunk_header;
@@ -367,6 +526,7 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
         
         if (!sender.get_chunk(i, chunk_header, chunk_data)) {
             std::cerr << "❌ Ошибка получения чанка " << i << "\n";
+            fcntl(sock, F_SETFL, flags);
             return false;
         }
         
@@ -385,45 +545,73 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
             framed_chunk = inject_errors(framed_chunk, codec_params.errorRate, codec_params.bitsM);
         }
         
-        // DEBUG: Размеры пакетов (раскомментируйте при необходимости)
-        // std::cout << "🔍 DEBUG: Чанк " << (i+1) << " - оригинал: " << chunk_bytes.size() 
-        //           << " байт, закодирован: " << framed_chunk.size() << " байт\n";
+        // Отправляем чанк с повторными попытками
+        bool chunk_ack_received = false;
+        int retry_count = 0;
+        const int max_retries = filetransfer::MAX_RETRIES;
         
-        sendto(sock, framed_chunk.data(), framed_chunk.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
-        
-        // ВАРИАНТ 1Б: Проверяем наличие запросов синхронизации (неблокирующий режим)
-        unsigned char recv_buffer[MAX_PACKET_SIZE];
-        sockaddr_in recv_addr{};
-        socklen_t recv_len = sizeof(recv_addr);
-        ssize_t nrecv = recvfrom(sock, recv_buffer, sizeof(recv_buffer), MSG_DONTWAIT,
-                                 (sockaddr *)&recv_addr, &recv_len);
-        
-        if (nrecv > 0) {
-            // Проверяем, это запрос синхронизации?
-            filetransfer::SyncRequest sync_req;
-            if (filetransfer::deserialize_sync_request(recv_buffer, nrecv, sync_req)) {
-                std::cout << "📥 Получен запрос синхронизации (ожидался чанк " 
-                          << sync_req.expected_chunk << ")\n";
-                std::cout << "🔄 Отправляем синхронизацию состояний...\n";
-                
-                // Отправляем синхронизацию состояний
-                if (send_codec_sync(sock, dest_addr, codec)) {
-                    std::cout << "✅ Синхронизация отправлена по запросу\n";
-                }
+        while (!chunk_ack_received && retry_count <= max_retries) {
+            if (retry_count > 0) {
+                std::cout << "🔄 Повторная отправка чанка " << (i + 1) << " (попытка " << (retry_count + 1) << ")\n";
             }
-        } else if (nrecv < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            // Игнорируем EAGAIN/EWOULDBLOCK (нет данных), но логируем другие ошибки
-            // std::cerr << "⚠️  Ошибка при проверке запросов синхронизации: " << strerror(errno) << "\n";
+            
+            sendto(sock, framed_chunk.data(), framed_chunk.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
+            
+            // Ждем ACK для чанка (также обрабатываем запросы синхронизации)
+            auto chunk_ack_timeout = std::chrono::steady_clock::now() + std::chrono::milliseconds(filetransfer::ACK_TIMEOUT_MS);
+            while (!chunk_ack_received && std::chrono::steady_clock::now() < chunk_ack_timeout) {
+                unsigned char recv_buffer[MAX_PACKET_SIZE];
+                sockaddr_in recv_addr{};
+                socklen_t recv_len = sizeof(recv_addr);
+                ssize_t nrecv = recvfrom(sock, recv_buffer, sizeof(recv_buffer), MSG_DONTWAIT,
+                                         (sockaddr *)&recv_addr, &recv_len);
+                
+                if (nrecv > 0) {
+                    // Проверяем, это запрос синхронизации?
+                    filetransfer::SyncRequest sync_req;
+                    if (filetransfer::deserialize_sync_request(recv_buffer, nrecv, sync_req)) {
+                        std::cout << "📥 Получен запрос синхронизации (ожидался чанк " 
+                                  << sync_req.expected_chunk << ")\n";
+                        std::cout << "🔄 Отправляем синхронизацию состояний...\n";
+                        
+                        // Отправляем синхронизацию состояний
+                        if (send_codec_sync(sock, dest_addr, codec)) {
+                            std::cout << "✅ Синхронизация отправлена по запросу\n";
+                        }
+                        // При запросе синхронизации переотправляем текущий чанк
+                        continue;
+                    }
+                    
+                    // Проверяем, это ACK?
+                    filetransfer::ChunkAck ack;
+                    if (filetransfer::deserialize_ack(recv_buffer, nrecv, ack)) {
+                        if (ack.chunk_index == i && ack.status == 0) {
+                            chunk_ack_received = true;
+                            break;
+                        }
+                    }
+                } else if (nrecv < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                    // Игнорируем EAGAIN/EWOULDBLOCK (нет данных)
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            
+            if (!chunk_ack_received) {
+                retry_count++;
+            }
+        }
+        
+        if (!chunk_ack_received) {
+            std::cerr << "❌ Не удалось получить ACK для чанка " << (i + 1) << " после " << max_retries << " попыток\n";
+            fcntl(sock, F_SETFL, flags);
+            return false;
         }
         
         // Показываем прогресс
         float progress = (100.0f * (i + 1)) / total_chunks;
         std::cout << "📤 Отправлен чанк " << (i + 1) << "/" << total_chunks 
                   << " (" << chunk_header.data_size << " байт, "
-                  << std::fixed << std::setprecision(1) << progress << "%)\n";
-        
-        // Небольшая задержка между чанками
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                  << std::fixed << std::setprecision(1) << progress << "%) ✅\n";
     }
     
     // Вычисляем время передачи и скорость
@@ -641,7 +829,7 @@ int main(int argc, char *argv[])
         }
         else
         {
-            if (!send_file_libsodium(sock, dest_addr, tx_key, file_path)) {
+            if (!send_file_libsodium(sock, dest_addr, tx_key, rx_key, file_path)) {
                 std::cerr << "❌ Ошибка при отправке файла через libsodium\n";
                 close(sock);
                 return 1;
