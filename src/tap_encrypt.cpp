@@ -235,7 +235,7 @@ bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vect
                   << std::fixed << std::setprecision(1) << progress << "%)\n";
         
         // Небольшая задержка между чанками
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
     
     // Вычисляем время передачи и скорость

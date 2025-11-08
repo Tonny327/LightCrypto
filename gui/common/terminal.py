@@ -17,6 +17,7 @@ import struct
 import termios
 import re
 import time
+import queue
 from typing import List, Optional
 
 from .constants import *
@@ -44,6 +45,8 @@ class EmbeddedTerminal:
         self.read_thread = None
         self.running = False
         self.on_process_finished = None  # Callback при завершении процесса
+        self.output_queue: "queue.Queue[tuple[str, Optional[str]]]" = queue.Queue()
+        self._flush_scheduled = False
         
         # Создание контейнера
         self.container = tk.Frame(parent_widget, bg=COLOR_BACKGROUND)
@@ -160,29 +163,43 @@ class EmbeddedTerminal:
             message: Текст сообщения
             tag: Тег для цветового выделения (optional)
         """
-        def update():
-            self.output_text.config(state=tk.NORMAL)
-            
-            # Проверка лимита буфера
-            if self.buffer_lines >= TERMINAL_BUFFER_LINES:
-                # Удаляем первую строку
-                self.output_text.delete('1.0', '2.0')
-                self.buffer_lines -= 1
-            
-            # Вставка текста
-            if tag:
-                self.output_text.insert(tk.END, message + '\n', tag)
-            else:
-                # Попытка определить автоматически по содержанию
-                auto_tag = self._detect_message_type(message)
-                self.output_text.insert(tk.END, message + '\n', auto_tag)
-            
-            self.buffer_lines += 1
-            self.output_text.see(tk.END)  # Автопрокрутка
-            self.output_text.config(state=tk.DISABLED)
-        
-        # Вызов в главном потоке Tkinter
-        self.parent.after(0, update)
+        self.output_queue.put((message, tag))
+        self._schedule_flush()
+
+    def _schedule_flush(self):
+        """Запланировать обновление вывода, если еще не запланировано"""
+        if not self._flush_scheduled:
+            self._flush_scheduled = True
+            self.parent.after(5, self._flush_output_queue)
+
+    def _flush_output_queue(self):
+        """Выгрузить накопленные сообщения в текстовый виджет"""
+        try:
+            while True:
+                message, tag = self.output_queue.get_nowait()
+                self._append_message(message, tag)
+        except queue.Empty:
+            self._flush_scheduled = False
+
+    def _append_message(self, message: str, tag: Optional[str]):
+        """Фактическая вставка строки в текстовый виджет"""
+        self.output_text.config(state=tk.NORMAL)
+
+        # Проверка лимита буфера
+        if self.buffer_lines >= TERMINAL_BUFFER_LINES:
+            self.output_text.delete('1.0', '2.0')
+            self.buffer_lines -= 1
+
+        # Вставка текста
+        if tag:
+            self.output_text.insert(tk.END, message + '\n', tag)
+        else:
+            auto_tag = self._detect_message_type(message)
+            self.output_text.insert(tk.END, message + '\n', auto_tag)
+
+        self.buffer_lines += 1
+        self.output_text.see(tk.END)
+        self.output_text.config(state=tk.DISABLED)
     
     def _detect_message_type(self, message: str) -> Optional[str]:
         """Автоопределение типа сообщения по содержанию"""
