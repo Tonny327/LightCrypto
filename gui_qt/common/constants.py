@@ -4,14 +4,30 @@ LightCrypto GUI - Константы (PyQt6)
 """
 
 import os
+import sys
 
 # === ПУТИ ===
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+# Определение базового пути: в PyInstaller используется _MEIPASS, иначе - директория проекта
+if getattr(sys, 'frozen', False):
+    # Запущено из исполняемого файла (PyInstaller)
+    # В PyInstaller все файлы находятся в sys._MEIPASS
+    BASE_DIR = sys._MEIPASS
+    PROJECT_ROOT = os.path.dirname(sys.executable)  # Директория, где находится исполняемый файл
+else:
+    # Запущено из исходников
+    BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+    PROJECT_ROOT = BASE_DIR
+
 GUI_ROOT = os.path.join(PROJECT_ROOT, 'gui_qt')
 # Для совместимости с utils.py, который может ссылаться на старую структуру
 GUI_ROOT_OLD = os.path.join(PROJECT_ROOT, 'gui')
-BUILD_DIR = os.path.join(PROJECT_ROOT, 'build')
-CIPHER_KEYS_DIR = os.path.join(PROJECT_ROOT, 'CipherKeys')
+
+# В исполняемом файле build/ находится рядом с исполняемым файлом
+# В режиме разработки - в PROJECT_ROOT/build
+BUILD_DIR = os.path.join(BASE_DIR, 'build') if getattr(sys, 'frozen', False) else os.path.join(PROJECT_ROOT, 'build')
+
+# CipherKeys в исполняемом файле находятся в BASE_DIR/CipherKeys
+CIPHER_KEYS_DIR = os.path.join(BASE_DIR, 'CipherKeys')
 PROFILES_DIR = os.path.join(GUI_ROOT, 'profiles', 'custom_codec')
 
 # Исполняемые файлы
@@ -19,8 +35,8 @@ TAP_ENCRYPT = os.path.join(BUILD_DIR, 'tap_encrypt')
 TAP_DECRYPT = os.path.join(BUILD_DIR, 'tap_decrypt')
 
 # Скрипты setup
-SETUP_TAP_A = os.path.join(PROJECT_ROOT, 'setup_tap_A.sh')
-SETUP_TAP_B = os.path.join(PROJECT_ROOT, 'setup_tap_B.sh')
+SETUP_TAP_A = os.path.join(BASE_DIR, 'setup_tap_A.sh')
+SETUP_TAP_B = os.path.join(BASE_DIR, 'setup_tap_B.sh')
 
 # === ЦВЕТОВАЯ ПАЛИТРА (Светлая тема - для совместимости) ===
 COLOR_BACKGROUND = '#F5F5F5'  # Фон окна
