@@ -31,11 +31,11 @@
 ```bash
 cd /home/tonny/projects/MyCryptoProject/LightCrypto
 
-# 1. Настройка sudo без пароля
-sudo ./setup_sudo.sh
-
-# 2. Сборка исполняемых файлов
+# 1. Сборка исполняемых файлов
 ./rebuild.sh
+
+# 2. Настройка sudo без пароля (опционально, но рекомендуется)
+# См. раздел "Настройка sudo без пароля" ниже
 ```
 
 ### Шаг 2: Запуск GUI
@@ -126,18 +126,34 @@ sudo apt install python3 python3-tk
 sudo apt install iputils-ping iperf hping3 tcpdump
 ```
 
-### Настройка sudo без пароля (обязательно!)
+### Настройка sudo без пароля (рекомендуется)
+
+Для удобной работы GUI рекомендуется настроить sudo без пароля. Это можно сделать вручную:
+
+**Настройка через visudo:**
 
 ```bash
-cd /home/tonny/projects/MyCryptoProject/LightCrypto
-sudo ./setup_sudo.sh
+sudo visudo
 ```
 
-Этот скрипт добавит правила в `/etc/sudoers.d/lightcrypto`, разрешающие:
-- Запуск `tap_encrypt` и `tap_decrypt` без пароля
-- Управление TAP интерфейсами
+Найдите строку с `%sudo` и добавьте `NOPASSWD:` перед `ALL`:
 
-**Важно**: После выполнения перезапустите терминал!
+```
+# Allow members of group sudo to execute any command
+%sudo ALL=(ALL:ALL) NOPASSWD: ALL
+```
+
+Или для конкретного пользователя (замените `username` на ваше имя пользователя):
+
+```
+username ALL=(ALL:ALL) NOPASSWD: ALL
+```
+
+**Альтернатива: Использование sudo с паролем**
+
+Если не настроить sudo без пароля, GUI будет запрашивать пароль при каждом запуске `tap_encrypt`/`tap_decrypt` и управлении TAP-интерфейсами. Это безопаснее, но менее удобно.
+
+**Важно**: После настройки перезапустите терминал!
 
 ### Сборка исполняемых файлов
 
@@ -1282,15 +1298,15 @@ sudo systemctl start lightcrypto-encrypt
 **Причина:** sudo не настроен для работы без пароля
 
 **Решение:**
-```bash
-sudo ./setup_sudo.sh
-# Перезапустите терминал
-```
+
+Настройте sudo вручную через visudo (см. раздел "Настройка sudo без пароля" выше) или используйте sudo с паролем при каждом запуске.
 
 **Проверка:**
 ```bash
 sudo -n true && echo "OK" || echo "Нужен пароль"
 ```
+
+**Альтернатива:** GUI может работать и с запросом пароля, но это менее удобно.
 
 ---
 
