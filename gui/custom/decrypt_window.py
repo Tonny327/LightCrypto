@@ -109,6 +109,11 @@ class CustomCodecDecryptGUI(LibSodiumDecryptGUI):
             '--h2', str(params['h2'])
         ]
         
+        if params.get('debug'):
+            cmd.append('--debug')
+        if params.get('debugStats'):
+            cmd.append('--debug-stats')
+        
         if mode == 'msg':
             cmd.append('--msg')
         elif mode == 'file':

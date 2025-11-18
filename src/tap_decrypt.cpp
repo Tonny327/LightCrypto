@@ -1,6 +1,7 @@
 #include <iostream>
 #include <iomanip>
 #include <vector>
+#include <string>
 #include <cstring>
 #include <fcntl.h>
 #include <unistd.h>
@@ -80,8 +81,11 @@ void send_frames(int tap_fd, int sock, const sockaddr_in &dest_addr, const std::
     }
 }
 
-void send_frames_codec(int tap_fd, int sock, const sockaddr_in &dest_addr, digitalcodec::DigitalCodec *codec)
+void send_frames_codec(int tap_fd, int sock, const sockaddr_in &dest_addr,
+                       digitalcodec::DigitalCodec *codec,
+                       const digitalcodec::CodecParams *params)
 {
+    size_t stats_counter = 0;
     while (true)
     {
         unsigned char buffer[MAX_PACKET_SIZE];
@@ -93,6 +97,17 @@ void send_frames_codec(int tap_fd, int sock, const sockaddr_in &dest_addr, digit
         std::vector<uint8_t> framed = codec->encodeMessage(payload);
         sendto(sock, framed.data(), framed.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
         std::cout << "📤 Отправлен кодированный кадр из tap1 (" << nread << " байт)\n";
+        
+        if (params && params->statsMode) {
+            stats_counter++;
+            // Выводим статистику после каждого кадра или каждые 10 кадров
+            if (stats_counter == 1 || stats_counter % 10 == 0) {
+                std::string label = "📊 Статистика кодека (передача";
+                label += (stats_counter == 1 ? ", первый кадр" : ", каждые 10 кадров");
+                label += ")";
+                codec->printDebugStats(label);
+            }
+        }
     }
 }
 
@@ -255,9 +270,15 @@ bool receive_file_libsodium(int sock, const std::vector<unsigned char> &rx_key, 
 }
 
 // Функция приема файла через кодек
-bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::string &output_path)
+bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::string &output_path,
+                        const digitalcodec::CodecParams &codec_params)
 {
     std::cout << "📥 Ожидание файла через кодек...\n";
+    auto print_stats_if_needed = [&](const std::string &label) {
+        if (codec_params.statsMode) {
+            codec->printDebugStats(label);
+        }
+    };
     
     filetransfer::FileReceiver receiver;
     bool header_received = false;
@@ -279,9 +300,9 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
         }
         
         // Сохраняем адрес отправителя при первом пакете
-        if (!sender_addr_known) {
-            sender_addr_known = true;
-        }
+            if (!sender_addr_known) {
+                sender_addr_known = true;
+            }
         
         // Проверяем, это пакет синхронизации состояний?
         if (nrecv >= 12 && buffer[0] == 0xFF && buffer[1] == 0xFE && 
@@ -338,7 +359,7 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
         // std::cout << "🔍 DEBUG: Декодирован в " << decoded_bytes.size() << " байт (после декодирования)\n";
         
         // Проверяем, это заголовок или чанк
-        if (!header_received) {
+            if (!header_received) {
             // Пытаемся распарсить как заголовок файла
             filetransfer::FileHeader header;
             if (filetransfer::deserialize_file_header(decoded_bytes.data(), decoded_bytes.size(), header, filename)) {
@@ -462,9 +483,11 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
                     std::cout << "⏱️  Время приема: " << std::fixed << std::setprecision(2) << seconds << " сек\n";
                     std::cout << "📊 Размер файла: " << std::fixed << std::setprecision(2) << file_size_mb << " МБ\n";
                     std::cout << "🚀 Скорость приема: " << std::fixed << std::setprecision(2) << speed_mbitps << " Мбит/сек\n";
+                    print_stats_if_needed("📊 Статистика кодека (приём файла)");
                     return true;
                 } else {
                     std::cerr << "❌ Ошибка при сохранении файла\n";
+                    print_stats_if_needed("📊 Статистика кодека (ошибка сохранения файла)");
                     return false;
                 }
             }
@@ -474,6 +497,7 @@ bool receive_file_codec(int sock, digitalcodec::DigitalCodec *codec, const std::
         }
     }
     
+    print_stats_if_needed("📊 Статистика кодека (завершение без результата)");
     return false;
 }
 
@@ -499,6 +523,8 @@ int main(int argc, char *argv[])
         if (arg == "--fun" && i + 1 < argc) { codec_params.funType = std::stoi(argv[++i]); continue; }
         if (arg == "--h1" && i + 1 < argc) { codec_params.h1 = std::stoi(argv[++i]); continue; }
         if (arg == "--h2" && i + 1 < argc) { codec_params.h2 = std::stoi(argv[++i]); continue; }
+        if (arg == "--debug") { codec_params.debugMode = true; continue; }
+        if (arg == "--debug-stats") { codec_params.statsMode = true; continue; }
         positionals.push_back(arg);
     }
 
@@ -625,6 +651,12 @@ int main(int argc, char *argv[])
             codec.reset(); // Восстанавливаем сброс состояний для правильной инициализации
             std::cout << "🎛️  Цифровой кодек включён (M=" << codec_params.bitsM
                       << ", Q=" << codec_params.bitsQ << ", fun=" << codec_params.funType << ")\n";
+            if (codec_params.debugMode) {
+                std::cout << "🔍 Режим отладки включён: будет выводиться процесс декодирования\n";
+            }
+            if (codec_params.statsMode) {
+                std::cout << "📈 Сбор статистики включён: доступны агрегированные показатели\n";
+            }
         } catch (const std::exception &e) {
             std::cerr << "❌ Ошибка инициализации кодека: " << e.what() << "\n";
             return 1;
@@ -640,7 +672,7 @@ int main(int argc, char *argv[])
     {
         if (use_codec)
         {
-            if (!receive_file_codec(sock, &codec, output_path)) {
+            if (!receive_file_codec(sock, &codec, output_path, codec_params)) {
                 std::cerr << "❌ Ошибка при приёме файла через кодек\n";
                 close(sock);
                 if (tap_fd >= 0) close(tap_fd);
@@ -685,7 +717,7 @@ int main(int argc, char *argv[])
             }
             else
             {
-                send_thread = std::thread(send_frames_codec, tap_fd, send_sock, sender_addr, &codec);
+                send_thread = std::thread(send_frames_codec, tap_fd, send_sock, sender_addr, &codec, &codec_params);
                 send_thread_started = true;
                 std::cout << "🔄 Двунаправленная передача включена (кодек)\n";
             }
@@ -703,6 +735,9 @@ int main(int argc, char *argv[])
             }
             std::string received_msg(decoded_bytes.begin(), decoded_bytes.end());
             std::cout << "📩 Получено сообщение (" << received_msg.size() << " байт): \"" << received_msg << "\"\n";
+            if (codec_params.statsMode) {
+                codec.printDebugStats("📊 Статистика кодека (приём сообщения)");
+            }
         }
         else
         {
@@ -720,6 +755,17 @@ int main(int argc, char *argv[])
                     }
                     write(tap_fd, decoded_bytes.data(), decoded_bytes.size());
                     std::cout << "✅ Принят и раскодирован кадр (" << decoded_bytes.size() << " байт)\n";
+                    if (codec_params.statsMode) {
+                        static size_t stats_counter = 0;
+                        stats_counter++;
+                        // Выводим статистику после каждого кадра или каждые 10 кадров
+                        if (stats_counter == 1 || stats_counter % 10 == 0) {
+                            std::string label = "📊 Статистика кодека (приём кадров";
+                            label += (stats_counter == 1 ? ", первый кадр" : ", каждые 10 пакетов");
+                            label += ")";
+                            codec.printDebugStats(label);
+                        }
+                    }
                 }
                 else
                 {
@@ -730,6 +776,9 @@ int main(int argc, char *argv[])
                     }
                     std::string received_msg(decoded_bytes.begin(), decoded_bytes.end());
                     std::cout << "📩 Получено сообщение (" << received_msg.size() << " байт): \"" << received_msg << "\"\n";
+                    if (codec_params.statsMode) {
+                        codec.printDebugStats("📊 Статистика кодека (приём сообщения)");
+                    }
                 }
             }
             else
@@ -774,6 +823,9 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (use_codec && codec_params.statsMode) {
+        codec.printDebugStats("📊 Итоговая статистика кодека (получатель)");
+    }
     if (tap_fd >= 0) {
         close(tap_fd);
     }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -17,6 +18,10 @@ struct CodecParams {
     int32_t h1 = 7;          // initial state 1
     int32_t h2 = 23;         // initial state 2
     bool infoInsteadOfRand = true;  // MATLAB InfoInsteadOfRand mode for collision handling
+    bool debugMode = false;         // Verbose per-symbol tracing
+    bool statsMode = false;         // Collect aggregate statistics
+    bool injectErrors = false;      // Artificial error injection flag (used on sender)
+    double errorRate = 0.01;        // Probability (0..1) for artificial errors
 };
 
 // COEFF is a matrix with rows = 2^Q, columns depend on funType
@@ -56,6 +61,10 @@ public:
     // If use_hash=true, verifies SHA-256 hash and returns empty vector on mismatch
     // Default: false (for MATLAB compatibility)
     std::vector<uint8_t> decodeMessage(const std::vector<uint8_t> &coded, size_t expected_len, bool use_hash = false);
+    
+    // Debug/statistics helpers
+    void printDebugStats(const std::string &context = "") const;
+    void resetDebugStats() const;
 
 private:
     // Helpers for symbol-level operation
@@ -85,6 +94,15 @@ private:
     int32_t enc_h2_ = 0;
     int32_t dec_h1_ = 0;
     int32_t dec_h2_ = 0;
+    
+    // Aggregate debug metrics (updated when statsMode enabled)
+    mutable std::atomic<uint64_t> metrics_encoded_symbols_{0};
+    mutable std::atomic<uint64_t> metrics_encode_collisions_{0};
+    mutable std::atomic<uint64_t> metrics_encode_random_fallbacks_{0};
+    mutable std::atomic<uint64_t> metrics_encode_direct_info_{0};
+    mutable std::atomic<uint64_t> metrics_decoded_symbols_{0};
+    mutable std::atomic<uint64_t> metrics_decode_direct_info_{0};
+    mutable std::atomic<uint64_t> metrics_decode_skips_{0};
 };
 
 } // namespace digitalcodec

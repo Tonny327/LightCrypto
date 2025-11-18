@@ -217,6 +217,14 @@ class ConfigManager:
         """Сохранить состояние режима отладки"""
         self.set('custom_debug', enabled)
     
+    def get_custom_debug_stats(self) -> bool:
+        """Получить состояние сбора статистики"""
+        return self.get('custom_debug_stats', False)
+    
+    def set_custom_debug_stats(self, enabled: bool):
+        """Сохранить состояние сбора статистики"""
+        self.set('custom_debug_stats', enabled)
+    
     def get_custom_inject_errors(self) -> bool:
         """Получить состояние внесения ошибок"""
         return self.get('custom_inject_errors', False)

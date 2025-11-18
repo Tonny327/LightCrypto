@@ -127,6 +127,17 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
             '--h2', str(params['h2'])
         ]
         
+        if params.get('debug'):
+            cmd.append('--debug')
+        if params.get('debugStats'):
+            cmd.append('--debug-stats')
+        if params.get('injectErrors'):
+            cmd.append('--inject-errors')
+            cmd.append('--error-rate')
+            error_rate = params.get('errorRate', 0.01)
+            error_rate = max(0.0, min(1.0, error_rate))
+            cmd.append(f"{error_rate:.4f}")
+        
         if mode == 'msg':
             cmd.append('--msg')
         elif mode == 'file':

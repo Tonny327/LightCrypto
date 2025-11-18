@@ -81,10 +81,12 @@ void DigitalCodec::reset() {
     enc_h2_ = wrapM(params_.h2);
     dec_h1_ = enc_h1_;
     dec_h2_ = enc_h2_;
-    // Отладочный вывод закомментирован для чистого вывода (как в LibSodium)
-    // std::cout << "🔄 Состояния кодека инициализированы: enc_h1_=" << enc_h1_ 
-    //           << ", enc_h2_=" << enc_h2_ << ", dec_h1_=" << dec_h1_ 
-    //           << ", dec_h2_=" << dec_h2_ << std::endl;
+    resetDebugStats();
+    if (params_.debugMode) {
+        std::cout << "🔄 [Codec] Состояния инициализированы: enc_h1_=" << enc_h1_
+                  << ", enc_h2_=" << enc_h2_ << ", dec_h1_=" << dec_h1_
+                  << ", dec_h2_=" << dec_h2_ << std::endl;
+    }
 }
 
 void DigitalCodec::syncStates(int32_t h1, int32_t h2) {
@@ -92,10 +94,11 @@ void DigitalCodec::syncStates(int32_t h1, int32_t h2) {
     enc_h2_ = wrapM(h2);
     dec_h1_ = enc_h1_;
     dec_h2_ = enc_h2_;
-    // Отладочный вывод закомментирован для чистого вывода (как в LibSodium)
-    // std::cout << "🔄 Состояния синхронизированы: enc_h1_=" << enc_h1_ 
-    //           << ", enc_h2_=" << enc_h2_ << ", dec_h1_=" << dec_h1_ 
-    //           << ", dec_h2_=" << dec_h2_ << std::endl;
+    if (params_.debugMode) {
+        std::cout << "🔄 [Codec] Состояния синхронизированы: enc_h1_=" << enc_h1_
+                  << ", enc_h2_=" << enc_h2_ << ", dec_h1_=" << dec_h1_
+                  << ", dec_h2_=" << dec_h2_ << std::endl;
+    }
 }
 
 int32_t DigitalCodec::wrapM(int64_t v) const {
@@ -310,8 +313,16 @@ std::vector<uint8_t> DigitalCodec::encodeSymbols(const std::vector<uint8_t> &sym
             sym = sym % funCount;
         }
         
+        if (params_.statsMode) {
+            metrics_encoded_symbols_.fetch_add(1, std::memory_order_relaxed);
+        }
+        
         int32_t x = enc_h1_;
         int32_t y = enc_h2_;
+        if (params_.debugMode) {
+            std::cout << "🔍 [Encode] Символ=" << sym << " (II=" << (sym + 1)
+                      << "), h1=" << x << ", h2=" << y << std::endl;
+        }
         
         // MATLAB: Вычисляем все функции для проверки коллизий
         std::vector<int32_t> RR(funCount);
@@ -338,11 +349,15 @@ std::vector<uint8_t> DigitalCodec::encodeSymbols(const std::vector<uint8_t> &sym
         
         int32_t next;
         bool skipSymbol = false;
+        bool usedDirectInfo = false;
+        const bool collisionDetected = (static_cast<int>(uniqueVals.size()) != funCount);
+        std::string encode_reason = "уникальное отображение";
         
         // MATLAB: if length(CoderData) == FunCount
-        if (static_cast<int>(uniqueVals.size()) == funCount) {
+        if (!collisionDetected) {
             // Нет коллизий - кодируем нормально
             next = RR[sym];
+            encode_reason = "без коллизий";
         } else {
             // Есть коллизии - определяем индексы дубликатов
             // DupData = setdiff(1:FunCount, IA);
@@ -371,6 +386,7 @@ std::vector<uint8_t> DigitalCodec::encodeSymbols(const std::vector<uint8_t> &sym
             
             if (symBeforeDups) {
                 next = RR[sym];
+                encode_reason = "символ до дубликатов";
             } else {
                 // MATLAB: InfoInsteadOfRand mode
                 bool symInRR = false;
@@ -384,6 +400,8 @@ std::vector<uint8_t> DigitalCodec::encodeSymbols(const std::vector<uint8_t> &sym
                 if (!symInRR && params_.infoInsteadOfRand) {
                     // Прямая передача информационного значения
                     next = sym + 1;
+                    usedDirectInfo = true;
+                    encode_reason = "прямая передача информации";
                 } else {
                     // MATLAB: Пропускаем символ, генерируем случайное значение
                     skipSymbol = true;
@@ -413,13 +431,33 @@ std::vector<uint8_t> DigitalCodec::encodeSymbols(const std::vector<uint8_t> &sym
                     } while (true);
                     
                     std::cerr << "⚠️  Пропущен символ " << sym << " из-за коллизии (Nskip++)\n";
+                    encode_reason = "случайное значение при коллизии";
                 }
+            }
+        }
+        
+        if (params_.statsMode) {
+            if (collisionDetected) {
+                metrics_encode_collisions_.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (skipSymbol) {
+                metrics_encode_random_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (usedDirectInfo) {
+                metrics_encode_direct_info_.fetch_add(1, std::memory_order_relaxed);
             }
         }
         
         // Обновляем состояния
         enc_h2_ = enc_h1_;
         enc_h1_ = next;
+        
+        if (params_.debugMode) {
+            std::cout << "   ↳ [Encode] Результат=" << next << " (" << encode_reason << ")\n";
+            if (skipSymbol) {
+                std::cout << "   ⚠️ [Encode] Символ пропущен из-за дубликатов, передано случайное значение\n";
+            }
+        }
         
         // Записываем закодированное значение
         toBytes(next, out);
@@ -437,11 +475,18 @@ std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &cod
         int32_t observed = fromBytes(&coded[i]);
         int32_t x = dec_h1_;
         int32_t y = dec_h2_;
+        bool decoded_symbol = false;
+        bool decode_direct = false;
+        bool decode_skip = false;
         
         // MATLAB: Вычисляем все функции
         std::vector<int32_t> RR(funCount);
         for (int ff = 0; ff < funCount; ++ff) {
             RR[ff] = digitalCodingFun(ff + 1, x, y);
+        }
+        
+        if (params_.debugMode) {
+            std::cout << "🔍 [Decode] Наблюдение=" << observed << ", h1=" << x << ", h2=" << y << std::endl;
         }
         
         // MATLAB: Ищем совпадение Iind = find(r(k) == RR)
@@ -459,6 +504,11 @@ std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &cod
             dec_h2_ = dec_h1_;
             dec_h1_ = next;
             out.push_back(static_cast<uint8_t>(matched));
+            decoded_symbol = true;
+            if (params_.debugMode) {
+                std::cout << "   ↳ [Decode] Совпадение функции #" << (matched + 1)
+                          << " -> символ " << matched << std::endl;
+            }
         } else {
             // MATLAB: Проверяем прямую передачу информации
             // Iind = find(r(k) == 1:FunCount)
@@ -468,6 +518,11 @@ std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &cod
                 dec_h2_ = dec_h1_;
                 dec_h1_ = next;
                 out.push_back(static_cast<uint8_t>(observed - 1));  // observed-1 для индексации от 0
+                decoded_symbol = true;
+                decode_direct = true;
+                if (params_.debugMode) {
+                    std::cout << "   ↳ [Decode] Прямая передача информации -> символ " << (observed - 1) << std::endl;
+                }
             } else {
                 // MATLAB: Пропускаем символ (Nskip++)
                 // Обновляем состояния тем же значением
@@ -483,6 +538,22 @@ std::vector<uint8_t> DigitalCodec::decodeSymbols(const std::vector<uint8_t> &cod
                     if (ff < funCount - 1) std::cerr << ",";
                 }
                 std::cerr << "]\n";
+                decode_skip = true;
+                if (params_.debugMode) {
+                    std::cout << "   ⚠️ [Decode] Символ пропущен: совпадение не найдено и InfoInsteadOfRand недоступен\n";
+                }
+            }
+        }
+        
+        if (params_.statsMode) {
+            if (decoded_symbol) {
+                metrics_decoded_symbols_.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (decode_direct) {
+                metrics_decode_direct_info_.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (decode_skip) {
+                metrics_decode_skips_.fetch_add(1, std::memory_order_relaxed);
             }
         }
     }
@@ -560,6 +631,31 @@ std::vector<uint8_t> DigitalCodec::decodeMessage(const std::vector<uint8_t> &cod
     }
     
     return decoded_bytes;
+}
+
+void DigitalCodec::resetDebugStats() const {
+    metrics_encoded_symbols_.store(0, std::memory_order_relaxed);
+    metrics_encode_collisions_.store(0, std::memory_order_relaxed);
+    metrics_encode_random_fallbacks_.store(0, std::memory_order_relaxed);
+    metrics_encode_direct_info_.store(0, std::memory_order_relaxed);
+    metrics_decoded_symbols_.store(0, std::memory_order_relaxed);
+    metrics_decode_direct_info_.store(0, std::memory_order_relaxed);
+    metrics_decode_skips_.store(0, std::memory_order_relaxed);
+}
+
+void DigitalCodec::printDebugStats(const std::string &context) const {
+    if (!params_.statsMode) {
+        return;
+    }
+    const std::string header = context.empty() ? "📊 Статистика цифрового кодека" : context;
+    std::cout << header << "\n"
+              << "   🔢 Закодировано символов: " << metrics_encoded_symbols_.load(std::memory_order_relaxed) << "\n"
+              << "   ⚠️  Коллизий обнаружено: " << metrics_encode_collisions_.load(std::memory_order_relaxed) << "\n"
+              << "   🎲 Случайных подстановок: " << metrics_encode_random_fallbacks_.load(std::memory_order_relaxed) << "\n"
+              << "   📡 Прямых передач Info: " << metrics_encode_direct_info_.load(std::memory_order_relaxed) << "\n"
+              << "   ✅ Декодировано символов: " << metrics_decoded_symbols_.load(std::memory_order_relaxed) << "\n"
+              << "   ℹ️  Декодировано через Info: " << metrics_decode_direct_info_.load(std::memory_order_relaxed) << "\n"
+              << "   ⛔ Пропусков при декодировании: " << metrics_decode_skips_.load(std::memory_order_relaxed) << "\n";
 }
 
 } // namespace digitalcodec

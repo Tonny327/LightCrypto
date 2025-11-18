@@ -1,5 +1,6 @@
 #include <iostream>
 #include <vector>
+#include <string>
 #include <cstring>
 #include <cerrno>
 #include <fcntl.h>
@@ -14,6 +15,8 @@
 #include <thread>
 #include <chrono>
 #include <iomanip>
+#include <random>
+#include <algorithm>
 #include "digital_codec.h"
 #include "file_transfer.h"
 
@@ -22,6 +25,48 @@ constexpr size_t MAX_PACKET_SIZE = 16000;  // Увеличено для подд
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
 constexpr size_t NONCE_SIZE = crypto_aead_chacha20poly1305_IETF_NPUBBYTES;
 constexpr size_t HASH_SIZE = crypto_hash_sha256_BYTES;
+
+// Функция искусственного внесения ошибок для тестирования помехоустойчивости
+std::vector<uint8_t> inject_errors(const std::vector<uint8_t> &data, double error_rate, int bitsM) {
+    if (error_rate <= 0.0 || data.size() <= 2 || bitsM <= 0) {
+        return data;
+    }
+    
+    static std::mt19937 gen(std::random_device{}());
+    std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
+    
+    const int bytes_per_symbol = (bitsM + 7) / 8;
+    if (bytes_per_symbol <= 0) {
+        return data;
+    }
+    
+    std::vector<uint8_t> corrupted = data;
+    const size_t data_start = 2; // первые 2 байта = длина полезных данных
+    int errors_injected = 0;
+    
+    for (size_t offset = data_start; offset + bytes_per_symbol <= corrupted.size(); offset += bytes_per_symbol) {
+        if (prob_dist(gen) < error_rate) {
+            std::uniform_int_distribution<int> bit_dist(0, bitsM - 1);
+            int bit_index = bit_dist(gen);
+            size_t byte_idx = offset + (bit_index / 8);
+            int bit_in_byte = bit_index % 8;
+            if (byte_idx < corrupted.size()) {
+                corrupted[byte_idx] ^= (1u << bit_in_byte);
+                errors_injected++;
+                size_t symbol_idx = (offset - data_start) / bytes_per_symbol;
+                std::cout << "💉 [Внесение ошибок] Символ #" << symbol_idx
+                          << ": инвертирован бит " << (bit_index + 1)
+                          << " (байт " << byte_idx << ")\n";
+            }
+        }
+    }
+    
+    if (errors_injected > 0) {
+        std::cout << "💉 [Внесение ошибок] Всего внесено ошибок: " << errors_injected << "\n";
+    }
+    
+    return corrupted;
+}
 
 // Функция отправки синхронизации состояний кодека
 bool send_codec_sync(int sock, const sockaddr_in &dest_addr, digitalcodec::DigitalCodec *codec) {
@@ -135,8 +180,10 @@ void receive_frames(int tap_fd, int sock, const std::vector<unsigned char> &key)
     }
 }
 
-void receive_frames_codec(int tap_fd, int sock, digitalcodec::DigitalCodec *codec)
+void receive_frames_codec(int tap_fd, int sock, digitalcodec::DigitalCodec *codec,
+                          const digitalcodec::CodecParams *params)
 {
+    size_t stats_counter = 0;
     while (true)
     {
         unsigned char buffer[MAX_PACKET_SIZE];
@@ -153,6 +200,17 @@ void receive_frames_codec(int tap_fd, int sock, digitalcodec::DigitalCodec *code
         }
         write(tap_fd, decoded_bytes.data(), decoded_bytes.size());
         std::cout << "✅ Принят и раскодирован кадр из tap1 (" << decoded_bytes.size() << " байт)\n";
+        
+        if (params && params->statsMode) {
+            stats_counter++;
+            // Выводим статистику после каждого кадра или каждые 10 кадров
+            if (stats_counter == 1 || stats_counter % 10 == 0) {
+                std::string label = "📊 Статистика кодека (приём";
+                label += (stats_counter == 1 ? ", первый кадр" : ", каждые 10 пакетов");
+                label += ")";
+                codec->printDebugStats(label);
+            }
+        }
     }
 }
 
@@ -384,9 +442,14 @@ bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vect
 
 // Функция отправки файла через кодек
 bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::DigitalCodec *codec,
-                     const std::string &file_path)
+                     const std::string &file_path, const digitalcodec::CodecParams &codec_params)
 {
     std::cout << "📁 Начинаем отправку файла через кодек: " << file_path << "\n";
+    auto print_stats_if_needed = [&](const std::string &label) {
+        if (codec_params.statsMode) {
+            codec->printDebugStats(label);
+        }
+    };
     
     // Делаем сокет неблокирующим для обработки запросов синхронизации
     int flags = fcntl(sock, F_GETFL, 0);
@@ -395,6 +458,7 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     // Загружаем файл
     filetransfer::FileSender sender;
     if (!sender.load_file(file_path)) {
+        print_stats_if_needed("📊 Статистика кодека (отправитель, ошибка чтения)");
         return false;
     }
     
@@ -405,6 +469,7 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     std::cout << "🔄 Начальная синхронизация состояний кодека...\n";
     if (!send_codec_sync(sock, dest_addr, codec)) {
         std::cerr << "❌ Критическая ошибка: не удалось отправить начальную синхронизацию\n";
+        print_stats_if_needed("📊 Статистика кодека (отправитель, ошибка синхронизации)");
         fcntl(sock, F_SETFL, flags);
         return false;
     }
@@ -413,6 +478,9 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     // 1. Отправляем заголовок файла
     auto header_bytes = filetransfer::serialize_file_header(sender.get_header(), sender.get_filename());
     std::vector<uint8_t> framed_header = codec->encodeMessage(header_bytes);
+    if (codec_params.injectErrors) {
+        framed_header = inject_errors(framed_header, codec_params.errorRate, codec_params.bitsM);
+    }
     
     sendto(sock, framed_header.data(), framed_header.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
     std::cout << "📤 Заголовок файла отправлен через кодек, ожидаем ACK...\n";
@@ -468,6 +536,7 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
         
         if (!sender.get_chunk(i, chunk_header, chunk_data)) {
             std::cerr << "❌ Ошибка получения чанка " << i << "\n";
+            print_stats_if_needed("📊 Статистика кодека (отправитель, ошибка чанка)");
             fcntl(sock, F_SETFL, flags);
             return false;
         }
@@ -481,6 +550,9 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
         
         // Кодируем чанк (состояния продолжают эволюционировать)
         std::vector<uint8_t> framed_chunk = codec->encodeMessage(chunk_bytes);
+        if (codec_params.injectErrors) {
+            framed_chunk = inject_errors(framed_chunk, codec_params.errorRate, codec_params.bitsM);
+        }
         
         // Отправляем чанк с повторными попытками
         bool chunk_ack_received = false;
@@ -540,6 +612,7 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
         
         if (!chunk_ack_received) {
             std::cerr << "❌ Не удалось получить ACK для чанка " << (i + 1) << " после " << max_retries << " попыток\n";
+            print_stats_if_needed("📊 Статистика кодека (отправитель, ошибочный ACK)");
             fcntl(sock, F_SETFL, flags);
             return false;
         }
@@ -569,6 +642,7 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     std::cout << "⏱️  Время передачи: " << std::fixed << std::setprecision(2) << seconds << " сек\n";
     std::cout << "📊 Размер файла: " << std::fixed << std::setprecision(2) << file_size_mb << " МБ\n";
     std::cout << "🚀 Скорость передачи: " << std::fixed << std::setprecision(2) << speed_mbitps << " Мбит/сек\n";
+    print_stats_if_needed("📊 Статистика кодека (отправитель, завершение файла)");
     return true;
 }
 
@@ -595,6 +669,14 @@ int main(int argc, char *argv[])
         if (arg == "--fun" && i + 1 < argc) { codec_params.funType = std::stoi(argv[++i]); continue; }
         if (arg == "--h1" && i + 1 < argc) { codec_params.h1 = std::stoi(argv[++i]); continue; }
         if (arg == "--h2" && i + 1 < argc) { codec_params.h2 = std::stoi(argv[++i]); continue; }
+        if (arg == "--debug") { codec_params.debugMode = true; continue; }
+        if (arg == "--debug-stats") { codec_params.statsMode = true; continue; }
+        if (arg == "--inject-errors") { codec_params.injectErrors = true; continue; }
+        if (arg == "--error-rate" && i + 1 < argc) {
+            double rate = std::stod(argv[++i]);
+            codec_params.errorRate = std::max(0.0, std::min(1.0, rate));
+            continue;
+        }
         positionals.push_back(arg);
     }
 
@@ -732,11 +814,21 @@ int main(int argc, char *argv[])
             codec.reset(); // Восстанавливаем сброс состояний для правильной инициализации
             std::cout << "🎛️  Цифровой кодек включён (M=" << codec_params.bitsM
                       << ", Q=" << codec_params.bitsQ << ", fun=" << codec_params.funType << ")\n";
+            if (codec_params.debugMode) {
+                std::cout << "🔍 Режим отладки включён: подробный вывод ETA включен\n";
+            }
+            if (codec_params.statsMode) {
+                std::cout << "📈 Сбор статистики включён: будут доступны агрегированные метрики\n";
+            }
+            if (codec_params.injectErrors) {
+                std::cout << "💉 Искусственное внесение ошибок включено (вероятность: "
+                          << std::fixed << std::setprecision(2) << (codec_params.errorRate * 100.0) << "%)\n";
+            }
             
             // Запускаем приём кадров в отдельном потоке для кодека (если НЕ режим сообщений и НЕ режим файлов)
             if (!message_mode && !file_mode)
             {
-                receive_thread = std::thread(receive_frames_codec, tap_fd, sock, &codec);
+                receive_thread = std::thread(receive_frames_codec, tap_fd, sock, &codec, &codec_params);
                 std::cout << "🔄 Двунаправленная передача включена (кодек)\n";
             }
         } catch (const std::exception &e) {
@@ -750,7 +842,7 @@ int main(int argc, char *argv[])
         // Режим передачи файлов
         if (use_codec)
         {
-            if (!send_file_codec(sock, dest_addr, &codec, file_path)) {
+            if (!send_file_codec(sock, dest_addr, &codec, file_path, codec_params)) {
                 std::cerr << "❌ Ошибка при отправке файла через кодек\n";
                 close(sock);
                 return 1;
@@ -780,8 +872,14 @@ int main(int argc, char *argv[])
                 // РЕЖИМ КОДЕКА: кодируем полноценное сообщение с фреймингом
                 std::vector<uint8_t> payload(user_message.begin(), user_message.end());
                 std::vector<uint8_t> framed = codec.encodeMessage(payload);
+                if (codec_params.injectErrors) {
+                    framed = inject_errors(framed, codec_params.errorRate, codec_params.bitsM);
+                }
                 sendto(sock, framed.data(), framed.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
                 std::cout << "📤 Сообщение закодировано и отправлено (" << framed.size() << " байт)\n";
+                if (codec_params.statsMode) {
+                    codec.printDebugStats("📊 Статистика кодека (отправитель, сообщение)");
+                }
             }
             else
             {
@@ -838,8 +936,24 @@ int main(int argc, char *argv[])
                 // Кодек: кодируем кадр целиком как сообщение и отправляем напрямую
                 std::vector<uint8_t> payload(buffer, buffer + nread);
                 std::vector<uint8_t> framed = codec.encodeMessage(payload);
+                
+                if (codec_params.injectErrors) {
+                    framed = inject_errors(framed, codec_params.errorRate, codec_params.bitsM);
+                }
                 sendto(sock, framed.data(), framed.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
                 std::cout << "📤 Отправлен кодированный кадр (" << nread << " байт)\n";
+                
+                if (codec_params.statsMode) {
+                    static size_t stats_counter = 0;
+                    stats_counter++;
+                    // Выводим статистику после каждого кадра или каждые 10 кадров
+                    if (stats_counter == 1 || stats_counter % 10 == 0) {
+                        std::string label = "📊 Статистика кодека (отправитель";
+                        label += (stats_counter == 1 ? ", первый кадр" : ", каждые 10 кадров");
+                        label += ")";
+                        codec.printDebugStats(label);
+                    }
+                }
             }
             else
             {
@@ -866,6 +980,9 @@ int main(int argc, char *argv[])
         }
     }
 
+    if (use_codec && codec_params.statsMode) {
+        codec.printDebugStats("📊 Итоговая статистика кодека (отправитель)");
+    }
     if (tap_fd >= 0) {
         close(tap_fd);
     }
