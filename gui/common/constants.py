@@ -4,6 +4,7 @@ LightCrypto GUI - Константы
 """
 
 import os
+import platform
 
 # === ПУТИ ===
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
@@ -12,13 +13,33 @@ BUILD_DIR = os.path.join(PROJECT_ROOT, 'build')
 CIPHER_KEYS_DIR = os.path.join(PROJECT_ROOT, 'CipherKeys')
 PROFILES_DIR = os.path.join(GUI_ROOT, 'profiles', 'custom_codec')
 
+# Определение расширения исполняемых файлов
+IS_WINDOWS = platform.system() == 'Windows'
+EXE_EXT = '.exe' if IS_WINDOWS else ''
+
 # Исполняемые файлы
-TAP_ENCRYPT = os.path.join(BUILD_DIR, 'tap_encrypt')
-TAP_DECRYPT = os.path.join(BUILD_DIR, 'tap_decrypt')
+TAP_ENCRYPT = os.path.join(BUILD_DIR, 'tap_encrypt' + EXE_EXT)
+TAP_DECRYPT = os.path.join(BUILD_DIR, 'tap_decrypt' + EXE_EXT)
+
+# На Windows исполняемые файлы могут быть в подпапке Release (Visual Studio)
+if IS_WINDOWS:
+    TAP_ENCRYPT_RELEASE = os.path.join(BUILD_DIR, 'Release', 'tap_encrypt' + EXE_EXT)
+    TAP_DECRYPT_RELEASE = os.path.join(BUILD_DIR, 'Release', 'tap_decrypt' + EXE_EXT)
+    # Проверяем наличие в Release папке
+    if os.path.exists(TAP_ENCRYPT_RELEASE):
+        TAP_ENCRYPT = TAP_ENCRYPT_RELEASE
+    if os.path.exists(TAP_DECRYPT_RELEASE):
+        TAP_DECRYPT = TAP_DECRYPT_RELEASE
 
 # Скрипты setup
-SETUP_TAP_A = os.path.join(PROJECT_ROOT, 'setup_tap_A.sh')
-SETUP_TAP_B = os.path.join(PROJECT_ROOT, 'setup_tap_B.sh')
+if IS_WINDOWS:
+    SETUP_TAP_A = os.path.join(PROJECT_ROOT, 'setup_tap_A.ps1')
+    SETUP_TAP_B = os.path.join(PROJECT_ROOT, 'setup_tap_B.ps1')
+    CLEANUP_TAP = os.path.join(PROJECT_ROOT, 'cleanup_tap.ps1')
+else:
+    SETUP_TAP_A = os.path.join(PROJECT_ROOT, 'setup_tap_A.sh')
+    SETUP_TAP_B = os.path.join(PROJECT_ROOT, 'setup_tap_B.sh')
+    CLEANUP_TAP = None  # На Linux используется команда ip link delete
 
 # === ЦВЕТОВАЯ ПАЛИТРА ===
 COLOR_BACKGROUND = '#F5F5F5'  # Фон окна

@@ -8,6 +8,8 @@ import re
 import csv
 import subprocess
 import math
+import platform
+import sys
 from typing import Dict, List, Optional, Tuple
 
 from .constants import *
@@ -180,18 +182,28 @@ def analyze_csv(csv_path: str) -> Dict[str, any]:
 
 def check_sudo_access() -> bool:
     """
-    Проверка наличия sudo доступа без пароля
+    Проверка наличия sudo доступа без пароля (Linux)
+    или прав администратора (Windows)
     
     Returns:
-        True если sudo доступен без пароля
+        True если есть необходимые права
     """
-    try:
-        result = subprocess.run(['sudo', '-n', 'true'],
-                              capture_output=True,
-                              timeout=2)
-        return result.returncode == 0
-    except Exception:
-        return False
+    if platform.system() == 'Windows':
+        # Проверка прав администратора на Windows
+        try:
+            import ctypes
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except Exception:
+            return False
+    else:
+        # Проверка sudo на Linux
+        try:
+            result = subprocess.run(['sudo', '-n', 'true'],
+                                  capture_output=True,
+                                  timeout=2)
+            return result.returncode == 0
+        except Exception:
+            return False
 
 
 def check_tap_interface(tap_name: str) -> bool:
@@ -199,18 +211,30 @@ def check_tap_interface(tap_name: str) -> bool:
     Проверка существования TAP интерфейса
     
     Args:
-        tap_name: Имя интерфейса (например, 'tap0')
+        tap_name: Имя интерфейса (например, 'tap0' на Linux или имя адаптера на Windows)
     
     Returns:
         True если интерфейс существует и активен
     """
-    try:
-        result = subprocess.run(['ip', 'link', 'show', tap_name],
-                              capture_output=True,
-                              timeout=2)
-        return result.returncode == 0
-    except Exception:
-        return False
+    if platform.system() == 'Windows':
+        try:
+            # Используем PowerShell для проверки TAP адаптера
+            ps_cmd = "Get-NetAdapter | Where-Object { $_.InterfaceDescription -like '*TAP*' -or $_.Name -like '*TAP*' } | Select-Object -First 1"
+            result = subprocess.run(['powershell', '-Command', ps_cmd],
+                                  capture_output=True,
+                                  text=True,
+                                  timeout=5)
+            return result.returncode == 0 and result.stdout.strip() != ''
+        except Exception:
+            return False
+    else:
+        try:
+            result = subprocess.run(['ip', 'link', 'show', tap_name],
+                                  capture_output=True,
+                                  timeout=2)
+            return result.returncode == 0
+        except Exception:
+            return False
 
 
 def get_tap_status(tap_name: str) -> Tuple[bool, str]:
@@ -227,19 +251,34 @@ def get_tap_status(tap_name: str) -> Tuple[bool, str]:
         return False, ''
     
     try:
-        # Получить IP адрес
-        result = subprocess.run(['ip', 'addr', 'show', tap_name],
-                              capture_output=True,
-                              text=True,
-                              timeout=2)
-        
-        if result.returncode == 0:
-            # Поиск IP в выводе
-            match = re.search(r'inet (\d+\.\d+\.\d+\.\d+/\d+)', result.stdout)
-            if match:
-                return True, match.group(1)
-        
-        return True, 'unknown'
+        if platform.system() == 'Windows':
+            # Получить IP адрес через PowerShell
+            ps_cmd = "$adapter = Get-NetAdapter | Where-Object { $_.InterfaceDescription -like '*TAP*' -or $_.Name -like '*TAP*' } | Select-Object -First 1; if ($adapter) { $ip = Get-NetIPAddress -InterfaceAlias $adapter.Name -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1; if ($ip) { Write-Output \"$($ip.IPAddress)/$($ip.PrefixLength)\" } }"
+            result = subprocess.run(['powershell', '-Command', ps_cmd],
+                                  capture_output=True,
+                                  text=True,
+                                  timeout=5)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                ip_str = result.stdout.strip()
+                if ip_str and ip_str != '':
+                    return True, ip_str
+            
+            return True, 'unknown'
+        else:
+            # Получить IP адрес через ip команду
+            result = subprocess.run(['ip', 'addr', 'show', tap_name],
+                                  capture_output=True,
+                                  text=True,
+                                  timeout=2)
+            
+            if result.returncode == 0:
+                # Поиск IP в выводе
+                match = re.search(r'inet (\d+\.\d+\.\d+\.\d+/\d+)', result.stdout)
+                if match:
+                    return True, match.group(1)
+            
+            return True, 'unknown'
     except Exception:
         return False, ''
 
@@ -315,19 +354,28 @@ def find_terminal_emulator() -> Optional[str]:
     Returns:
         Путь к терминалу или None
     """
-    terminals = ['gnome-terminal', 'konsole', 'xterm', 'xfce4-terminal', 'mate-terminal']
-    
-    for term in terminals:
-        try:
-            result = subprocess.run(['which', term],
-                                  capture_output=True,
-                                  text=True)
-            if result.returncode == 0:
-                return term
-        except Exception:
-            continue
-    
-    return None
+    if platform.system() == 'Windows':
+        # Windows: используем PowerShell или cmd.exe
+        if os.path.exists(os.environ.get('WINDIR', '') + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'):
+            return 'powershell'
+        elif os.path.exists(os.environ.get('WINDIR', '') + '\\System32\\cmd.exe'):
+            return 'cmd'
+        return None
+    else:
+        # Linux: ищем графические терминалы
+        terminals = ['gnome-terminal', 'konsole', 'xterm', 'xfce4-terminal', 'mate-terminal']
+        
+        for term in terminals:
+            try:
+                result = subprocess.run(['which', term],
+                                      capture_output=True,
+                                      text=True)
+                if result.returncode == 0:
+                    return term
+            except Exception:
+                continue
+        
+        return None
 
 
 def escape_shell_arg(arg: str) -> str:

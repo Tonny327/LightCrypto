@@ -9,16 +9,28 @@ from tkinter import scrolledtext
 import subprocess
 import threading
 import os
-import signal
-import pty
-import select
-import fcntl
-import struct
-import termios
 import re
 import time
 import queue
+import platform
 from typing import List, Optional
+
+# Импорт платформо-специфичных модулей
+if platform.system() != 'Windows':
+    import signal
+    import pty
+    import select
+    import fcntl
+    import struct
+    import termios
+else:
+    # Windows не поддерживает эти модули
+    signal = None
+    pty = None
+    select = None
+    fcntl = None
+    struct = None
+    termios = None
 
 from .constants import *
 
@@ -175,9 +187,15 @@ class EmbeddedTerminal:
     def _flush_output_queue(self):
         """Выгрузить накопленные сообщения в текстовый виджет (с ограничением)"""
         try:
-            # Ограничиваем количество обрабатываемых сообщений за раз
-            # чтобы не блокировать GUI при большом потоке данных
-            max_messages_per_flush = 50
+            # Для Windows: меньше сообщений за раз и больше задержка для плавности
+            import platform
+            if platform.system() == 'Windows':
+                max_messages_per_flush = 20  # Меньше для Windows
+                batch_delay = 50  # мс между батчами
+            else:
+                max_messages_per_flush = 50
+                batch_delay = 10
+            
             processed = 0
             
             while processed < max_messages_per_flush:
@@ -188,10 +206,10 @@ class EmbeddedTerminal:
                 except queue.Empty:
                     break
             
-            # Если очередь не пуста, планируем следующую обработку
+            # Если очередь не пуста, планируем следующую обработку с задержкой
             if not self.output_queue.empty():
                 self._flush_scheduled = True
-                self.parent.after_idle(self._flush_output_queue)
+                self.parent.after(batch_delay, self._flush_output_queue)
             else:
                 self._flush_scheduled = False
                 
@@ -223,8 +241,10 @@ class EmbeddedTerminal:
 
             self.buffer_lines += 1
             
-            # Автопрокрутка только каждые 10 сообщений для производительности
-            if self.buffer_lines % 10 == 0:
+            # Автопрокрутка только каждые 20 сообщений для производительности (Windows)
+            import platform
+            scroll_interval = 20 if platform.system() == 'Windows' else 10
+            if self.buffer_lines % scroll_interval == 0:
                 self.output_text.see(tk.END)
             
             self.output_text.config(state=tk.DISABLED)
@@ -308,26 +328,39 @@ class EmbeddedTerminal:
             self.running = False
     
     def _run_with_pty(self, command: List[str]):
-        """Запуск процесса через PTY (полный захват вывода)"""
+        """Запуск процесса через PTY (полный захват вывода) или subprocess на Windows"""
         try:
-            # Создаем PTY
-            master_fd, slave_fd = pty.openpty()
-            self.master_fd = master_fd
-            
-            # Запускаем процесс
-            self.process = subprocess.Popen(
-                command,
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                start_new_session=True
-            )
-            
-            # Закрываем slave в родительском процессе
-            os.close(slave_fd)
-            
-            # Устанавливаем неблокирующий режим
-            fcntl.fcntl(master_fd, fcntl.F_SETFL, os.O_NONBLOCK)
+            if platform.system() == 'Windows':
+                # Windows: используем обычный subprocess
+                self.process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,  # Объединяем stderr с stdout
+                    text=False,  # Работаем с байтами
+                    bufsize=1,  # Небуферизованный режим
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
+                self.master_fd = None  # На Windows не используем PTY
+            else:
+                # Unix: используем PTY
+                master_fd, slave_fd = pty.openpty()
+                self.master_fd = master_fd
+                
+                # Запускаем процесс
+                self.process = subprocess.Popen(
+                    command,
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    start_new_session=True
+                )
+                
+                # Закрываем slave в родительском процессе
+                os.close(slave_fd)
+                
+                # Устанавливаем неблокирующий режим
+                fcntl.fcntl(master_fd, fcntl.F_SETFL, os.O_NONBLOCK)
             
             self.running = True
             
@@ -365,7 +398,7 @@ class EmbeddedTerminal:
                 self.parent.after(0, self.on_process_finished)
     
     def _read_process_output_pty(self):
-        """Чтение вывода процесса через PTY"""
+        """Чтение вывода процесса через PTY (Unix) или subprocess (Windows)"""
         try:
             buffer = b''
             last_output_time = 0
@@ -374,67 +407,120 @@ class EmbeddedTerminal:
             # Ограничение частоты вывода сообщений (максимум 10 сообщений в секунду)
             min_message_interval = 0.1
             
-            while self.running and self.master_fd:
-                # Используем select для неблокирующего чтения
-                ready, _, _ = select.select([self.master_fd], [], [], 0.05)
-                
-                if ready:
+            if platform.system() == 'Windows':
+                # Windows: читаем из stdout процесса с оптимизацией
+                while self.running and self.process:
                     try:
-                        data = os.read(self.master_fd, 4096)
-                        if not data:
+                        # Читаем данные из stdout
+                        if self.process.stdout:
+                            # Используем readline для построчного чтения
+                            line = self.process.stdout.readline()
+                            if line:
+                                # Декодируем сразу
+                                try:
+                                    text = line.decode('utf-8', errors='replace').rstrip()
+                                except:
+                                    text = line.decode('cp1251', errors='replace').rstrip()
+                                
+                                if text:
+                                    current_time = time.time()
+                                    
+                                    # Удаление ANSI escape sequences
+                                    text_clean = self._strip_ansi(text)
+                                    
+                                    # Ограничение частоты вывода (больше интервал для Windows)
+                                    min_interval = 0.2  # 200мс между сообщениями для Windows
+                                    if text_clean and (current_time - last_message_time >= min_interval):
+                                        # Фильтрация дублирующихся сообщений
+                                        if not hasattr(self, '_last_message') or self._last_message != text_clean:
+                                            self.print_to_terminal(text_clean)
+                                            self._last_message = text_clean
+                                            last_message_time = current_time
+                                            message_count += 1
+                                        elif current_time - last_message_time >= 2.0:
+                                            # Разрешаем дубликаты раз в 2 секунды
+                                            self.print_to_terminal(text_clean)
+                                            last_message_time = current_time
+                                    
+                                    last_output_time = current_time
+                            elif self.process.poll() is not None:
+                                # Процесс завершен
+                                break
+                            else:
+                                # Небольшая задержка для снижения нагрузки на CPU
+                                time.sleep(0.05)
+                        else:
                             break
-                        
-                        buffer += data
-                        current_time = time.time()
-                        
-                        # Обработка построчно с ограничением частоты
-                        while b'\n' in buffer:
-                            line, buffer = buffer.split(b'\n', 1)
-                            text = line.decode('utf-8', errors='replace').rstrip()
+                    except Exception as e:
+                        if self.running:
+                            # Не выводим каждую ошибку, чтобы не спамить
+                            if not hasattr(self, '_error_shown'):
+                                self.print_to_terminal(f"Ошибка чтения: {e}", 'warning')
+                                self._error_shown = True
+                        break
+            else:
+                # Unix: используем PTY и select
+                while self.running and self.master_fd:
+                    # Используем select для неблокирующего чтения
+                    ready, _, _ = select.select([self.master_fd], [], [], 0.05)
+                    
+                    if ready:
+                        try:
+                            data = os.read(self.master_fd, 4096)
+                            if not data:
+                                break
                             
-                            # Удаление ANSI escape sequences (опционально)
-                            text_clean = self._strip_ansi(text)
+                            buffer += data
+                            current_time = time.time()
                             
-                            # Ограничение частоты вывода для предотвращения перегрузки GUI
-                            if text_clean and (current_time - last_message_time >= min_message_interval):
-                                # Фильтрация дублирующихся сообщений (например, повторяющиеся "Отправлен кадр")
-                                if not hasattr(self, '_last_message') or self._last_message != text_clean:
+                            # Обработка построчно с ограничением частоты
+                            while b'\n' in buffer:
+                                line, buffer = buffer.split(b'\n', 1)
+                                text = line.decode('utf-8', errors='replace').rstrip()
+                                
+                                # Удаление ANSI escape sequences (опционально)
+                                text_clean = self._strip_ansi(text)
+                                
+                                # Ограничение частоты вывода для предотвращения перегрузки GUI
+                                if text_clean and (current_time - last_message_time >= min_message_interval):
+                                    # Фильтрация дублирующихся сообщений (например, повторяющиеся "Отправлен кадр")
+                                    if not hasattr(self, '_last_message') or self._last_message != text_clean:
+                                        self.print_to_terminal(text_clean)
+                                        self._last_message = text_clean
+                                        last_message_time = current_time
+                                        message_count += 1
+                                    elif current_time - last_message_time >= 1.0:
+                                        # Разрешаем дубликаты раз в секунду
+                                        self.print_to_terminal(text_clean)
+                                        last_message_time = current_time
+                                
+                                last_output_time = current_time
+                            
+                            # Если в буфере есть данные без \n и прошло больше 0.5 сек, выводим
+                            if buffer and (current_time - last_output_time > 0.5):
+                                text = buffer.decode('utf-8', errors='replace').rstrip()
+                                text_clean = self._strip_ansi(text)
+                                if text_clean and (current_time - last_message_time >= min_message_interval):
                                     self.print_to_terminal(text_clean)
-                                    self._last_message = text_clean
+                                    buffer = b''
+                                    last_output_time = current_time
                                     last_message_time = current_time
-                                    message_count += 1
-                                elif current_time - last_message_time >= 1.0:
-                                    # Разрешаем дубликаты раз в секунду
-                                    self.print_to_terminal(text_clean)
-                                    last_message_time = current_time
-                            
-                            last_output_time = current_time
                         
-                        # Если в буфере есть данные без \n и прошло больше 0.5 сек, выводим
-                        if buffer and (current_time - last_output_time > 0.5):
+                        except OSError:
+                            break
+                    
+                    # Проверка завершения процесса
+                    if self.process and self.process.poll() is not None:
+                        # Вывести оставшийся буфер
+                        if buffer:
                             text = buffer.decode('utf-8', errors='replace').rstrip()
                             text_clean = self._strip_ansi(text)
-                            if text_clean and (current_time - last_message_time >= min_message_interval):
+                            if text_clean:
                                 self.print_to_terminal(text_clean)
-                                buffer = b''
-                                last_output_time = current_time
-                                last_message_time = current_time
-                    
-                    except OSError:
                         break
-                
-                # Проверка завершения процесса
-                if self.process and self.process.poll() is not None:
-                    # Вывести оставшийся буфер
-                    if buffer:
-                        text = buffer.decode('utf-8', errors='replace').rstrip()
-                        text_clean = self._strip_ansi(text)
-                        if text_clean:
-                            self.print_to_terminal(text_clean)
-                    break
         
         except Exception as e:
-            self.print_to_terminal(f"⚠️  Ошибка чтения PTY: {e}", 'warning')
+            self.print_to_terminal(f"⚠️  Ошибка чтения вывода: {e}", 'warning')
         
         finally:
             self.running = False
@@ -464,19 +550,33 @@ class EmbeddedTerminal:
         self.running = False
         
         try:
-            # Отправляем SIGTERM группе процессов
-            os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
-            
-            # Ждем завершения (timeout 3 секунды)
-            try:
-                self.process.wait(timeout=3)
-                self.print_to_terminal("✅ Процесс остановлен корректно", 'success')
-            except subprocess.TimeoutExpired:
-                # Если не завершился - SIGKILL
-                self.print_to_terminal("⚠️  Процесс не отвечает, принудительная остановка...", 'warning')
-                os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
-                self.process.wait(timeout=1)
-                self.print_to_terminal("✅ Процесс принудительно остановлен", 'success')
+            if platform.system() == 'Windows':
+                # Windows: используем terminate() и kill()
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=3)
+                    self.print_to_terminal("✅ Процесс остановлен корректно", 'success')
+                except subprocess.TimeoutExpired:
+                    # Если не завершился - kill()
+                    self.print_to_terminal("⚠️  Процесс не отвечает, принудительная остановка...", 'warning')
+                    self.process.kill()
+                    self.process.wait(timeout=1)
+                    self.print_to_terminal("✅ Процесс принудительно остановлен", 'success')
+            else:
+                # Unix: используем сигналы
+                # Отправляем SIGTERM группе процессов
+                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                
+                # Ждем завершения (timeout 3 секунды)
+                try:
+                    self.process.wait(timeout=3)
+                    self.print_to_terminal("✅ Процесс остановлен корректно", 'success')
+                except subprocess.TimeoutExpired:
+                    # Если не завершился - SIGKILL
+                    self.print_to_terminal("⚠️  Процесс не отвечает, принудительная остановка...", 'warning')
+                    os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+                    self.process.wait(timeout=1)
+                    self.print_to_terminal("✅ Процесс принудительно остановлен", 'success')
         
         except Exception as e:
             self.print_to_terminal(f"❌ Ошибка остановки процесса: {e}", 'error')
@@ -533,13 +633,16 @@ class EmbeddedTerminal:
         
         try:
             # Отправка в stdin процесса
-            if self.master_fd:
-                # Через PTY
+            if platform.system() != 'Windows' and self.master_fd:
+                # Unix: через PTY
                 os.write(self.master_fd, (message + '\n').encode('utf-8'))
             elif self.process.stdin:
-                # Через обычный stdin
+                # Windows или обычный stdin
                 self.process.stdin.write((message + '\n').encode('utf-8'))
                 self.process.stdin.flush()
+            else:
+                self.print_to_terminal("⚠️  Не удалось отправить сообщение: stdin недоступен", 'warning')
+                return
             
             # Очистка поля ввода
             self.input_entry.delete(0, tk.END)

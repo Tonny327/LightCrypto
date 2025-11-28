@@ -99,15 +99,27 @@ class CustomCodecDecryptGUI(LibSodiumDecryptGUI):
         self.config.save()
         
         # Формирование команды
-        cmd = [
-            'sudo', TAP_DECRYPT,
-            '--codec', params['csv_path'],
-            '--M', str(params['M']),
-            '--Q', str(params['Q']),
-            '--fun', str(params['funType']),
-            '--h1', str(params['h1']),
-            '--h2', str(params['h2'])
-        ]
+        import platform
+        if platform.system() == 'Windows':
+            cmd = [
+                TAP_DECRYPT,
+                '--codec', params['csv_path'],
+                '--M', str(params['M']),
+                '--Q', str(params['Q']),
+                '--fun', str(params['funType']),
+                '--h1', str(params['h1']),
+                '--h2', str(params['h2'])
+            ]
+        else:
+            cmd = [
+                'sudo', TAP_DECRYPT,
+                '--codec', params['csv_path'],
+                '--M', str(params['M']),
+                '--Q', str(params['Q']),
+                '--fun', str(params['funType']),
+                '--h1', str(params['h1']),
+                '--h2', str(params['h2'])
+            ]
         
         if params.get('debug'):
             cmd.append('--debug')

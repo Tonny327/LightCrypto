@@ -48,16 +48,26 @@ class LightCryptoGUI:
     
     def _check_requirements(self) -> bool:
         """Проверка системных требований"""
+        import platform
+        is_windows = platform.system() == 'Windows'
+        
         print("🔍 Проверка системных требований...")
         
-        # Проверка sudo доступа
+        # Проверка прав администратора (Windows) или sudo (Linux)
         if not check_sudo_access():
-            print(MSG_SUDO_REQUIRED)
-            response = input("Продолжить без sudo? (y/N): ")
+            if is_windows:
+                print("⚠️  Требуются права администратора!")
+                print("   Некоторые функции могут не работать без прав администратора.")
+            else:
+                print(MSG_SUDO_REQUIRED)
+            response = input("Продолжить без прав администратора? (y/N): ")
             if response.lower() != 'y':
                 return False
         else:
-            print("✅ Sudo доступ: OK")
+            if is_windows:
+                print("✅ Права администратора: OK")
+            else:
+                print("✅ Sudo доступ: OK")
         
         # Проверка исполняемых файлов
         all_exist, missing = check_build_files()

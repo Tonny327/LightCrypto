@@ -5,6 +5,7 @@ LightCrypto GUI - LibSodium Decrypt (Получатель)
 import tkinter as tk
 from tkinter import ttk, messagebox
 import subprocess
+import platform
 
 import sys
 import os
@@ -458,19 +459,49 @@ class LibSodiumDecryptGUI:
         
         try:
             tap_b_ip = self.tap_b_ip_var.get().strip()
-            result = subprocess.run(
-                ['sudo', 'bash', SETUP_TAP_B, tap_b_ip],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
+            
+            if platform.system() == 'Windows':
+                # Windows: используем PowerShell скрипт с правильной кодировкой
+                result = subprocess.run(
+                    ['powershell', '-ExecutionPolicy', 'Bypass', '-NoProfile', '-File', SETUP_TAP_B, '-TapIP', tap_b_ip],
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    timeout=30,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
+            else:
+                # Linux: используем bash скрипт с sudo
+                result = subprocess.run(
+                    ['sudo', 'bash', SETUP_TAP_B, tap_b_ip],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
             
             if result.returncode == 0:
                 self.terminal.print_to_terminal(f"{EMOJI_SUCCESS} {TAP_NAMES['decrypt']} создан успешно!", 'success')
-                self.terminal.print_to_terminal(result.stdout, 'info')
+                if result.stdout:
+                    # Фильтруем пустые строки и лишний вывод
+                    for line in result.stdout.split('\n'):
+                        line = line.strip()
+                        if line and not line.startswith('Identity added'):  # Игнорируем SSH сообщения
+                            self.terminal.print_to_terminal(line, 'info')
             else:
                 self.terminal.print_to_terminal(f"{EMOJI_ERROR} Ошибка создания {TAP_NAMES['decrypt']}", 'error')
-                self.terminal.print_to_terminal(result.stderr, 'error')
+                # Выводим ошибки более читаемо
+                error_output = result.stderr if result.stderr else result.stdout
+                if error_output:
+                    for line in error_output.split('\n'):
+                        line = line.strip()
+                        if line and 'ParserError' not in line and 'TerminatorExpected' not in line:
+                            self.terminal.print_to_terminal(line, 'error')
+                
+                # Полезная подсказка
+                if platform.system() == 'Windows':
+                    self.terminal.print_to_terminal("💡 Убедитесь, что запущено от имени администратора!", 'info')
+                    self.terminal.print_to_terminal("💡 Проверьте наличие TAP адаптера: Get-NetAdapter | Where-Object { $_.InterfaceDescription -like '*TAP*' }", 'info')
         
         except subprocess.TimeoutExpired:
             self.terminal.print_to_terminal(f"{EMOJI_ERROR} Timeout при создании TAP", 'error')
@@ -489,17 +520,34 @@ class LibSodiumDecryptGUI:
         self.terminal.print_to_terminal(f"{EMOJI_CLEAN} Удаление {TAP_NAMES['decrypt']}...", 'warning')
         
         try:
-            result = subprocess.run(
-                ['sudo', 'ip', 'link', 'delete', TAP_NAMES['decrypt']],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
+            if platform.system() == 'Windows':
+                # Windows: используем PowerShell скрипт очистки с правильной кодировкой
+                result = subprocess.run(
+                    ['powershell', '-ExecutionPolicy', 'Bypass', '-NoProfile', '-File', CLEANUP_TAP],
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    timeout=15,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
+                )
+            else:
+                # Linux: используем команду ip link delete
+                result = subprocess.run(
+                    ['sudo', 'ip', 'link', 'delete', TAP_NAMES['decrypt']],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
             
             if result.returncode == 0:
                 self.terminal.print_to_terminal(f"{EMOJI_SUCCESS} {TAP_NAMES['decrypt']} удален", 'success')
+                if result.stdout:
+                    self.terminal.print_to_terminal(result.stdout, 'info')
             else:
                 self.terminal.print_to_terminal(f"{EMOJI_WARNING} {TAP_NAMES['decrypt']} не найден или уже удален", 'warning')
+                if result.stderr:
+                    self.terminal.print_to_terminal(result.stderr, 'warning')
         
         except Exception as e:
             self.terminal.print_to_terminal(f"{EMOJI_ERROR} Ошибка: {e}", 'error')
@@ -531,7 +579,10 @@ class LibSodiumDecryptGUI:
         self.config.save()
         
         # Формирование команды
-        cmd = ['sudo', TAP_DECRYPT]
+        if platform.system() == 'Windows':
+            cmd = [TAP_DECRYPT]
+        else:
+            cmd = ['sudo', TAP_DECRYPT]
         
         if mode == 'msg':
             cmd.append('--msg')
