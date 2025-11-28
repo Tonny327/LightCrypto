@@ -17,13 +17,15 @@ constexpr uint32_t MAGIC_FILE_ACK = 0x41434B00;     // "ACK\0"
 constexpr uint32_t MAGIC_SYNC_REQUEST = 0x53594E43; // "SYNC" - запрос синхронизации
 
 // Размер чанка данных (без заголовков)
-constexpr size_t CHUNK_DATA_SIZE = 1400;  // Оставляем место для заголовков и шифрования
+// Увеличено для лучшей пропускной способности (было 1400)
+constexpr size_t CHUNK_DATA_SIZE = 8192;  // Больший размер = меньше overhead от заголовков
 
 // Максимальное количество попыток передачи
 constexpr int MAX_RETRIES = 3;
 
 // Таймаут ожидания подтверждения (миллисекунды)
-constexpr int ACK_TIMEOUT_MS = 5000;
+// Уменьшен для более быстрой реакции (было 5000)
+constexpr int ACK_TIMEOUT_MS = 1000;
 
 // Структура заголовка файла
 struct FileHeader {

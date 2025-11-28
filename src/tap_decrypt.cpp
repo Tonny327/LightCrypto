@@ -16,7 +16,7 @@
 #include "digital_codec.h"
 #include "file_transfer.h"
 
-constexpr size_t MAX_PACKET_SIZE = 16000;  // Увеличено для поддержки Custom Codec (коэффициент расширения ~4x)
+constexpr size_t MAX_PACKET_SIZE = 160000;  // Увеличено для поддержки Custom Codec (коэффициент расширения ~4x)
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
 constexpr size_t NONCE_SIZE = crypto_aead_chacha20poly1305_IETF_NPUBBYTES;
 constexpr size_t HASH_SIZE = crypto_hash_sha256_BYTES;
@@ -118,10 +118,17 @@ void send_frames_codec(int tap_fd, int sock, const sockaddr_in &dest_addr,
         if (nread <= 0)
             continue;
 
-        std::vector<uint8_t> payload(buffer, buffer + nread);
+        // Оптимизация: избегаем лишнего копирования
+        std::vector<uint8_t> payload;
+        payload.reserve(nread);
+        payload.assign(buffer, buffer + nread);
         std::vector<uint8_t> framed = codec->encodeMessage(payload);
         sendto(sock, framed.data(), framed.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
-        std::cout << "📤 Отправлен кодированный кадр из tap1 (" << nread << " байт)\n";
+        // Уменьшаем частоту вывода для производительности
+        static size_t frame_counter = 0;
+        if (++frame_counter % 100 == 0 || (params && params->debugMode)) {
+            std::cout << "📤 Отправлен кодированный кадр из tap1 (" << nread << " байт)\n";
+        }
         
         if (params && params->statsMode) {
             stats_counter++;

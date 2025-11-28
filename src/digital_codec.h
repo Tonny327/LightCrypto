@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <unordered_set>
+#include <unordered_map>
 
 // Lightweight C++ port of DigitalCodingFun and a minimal codec around it.
 // The arithmetic is performed in a fixed-width signed M-bit ring (two's complement)

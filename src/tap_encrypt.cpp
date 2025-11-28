@@ -21,7 +21,7 @@
 #include "file_transfer.h"
 
 
-constexpr size_t MAX_PACKET_SIZE = 16000;  // Увеличено для поддержки Custom Codec (коэффициент расширения ~4x)
+constexpr size_t MAX_PACKET_SIZE = 160000;  // Увеличено для поддержки Custom Codec (коэффициент расширения ~4x)
 constexpr size_t KEY_SIZE = crypto_aead_chacha20poly1305_IETF_KEYBYTES;
 constexpr size_t NONCE_SIZE = crypto_aead_chacha20poly1305_IETF_NPUBBYTES;
 constexpr size_t HASH_SIZE = crypto_hash_sha256_BYTES;
@@ -330,7 +330,11 @@ bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vect
                 }
             }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        // Убрали sleep для более быстрой реакции (было 1ms)
+        // Используем busy-wait только если нет данных, чтобы не нагружать CPU
+        if (nrecv <= 0) {
+            std::this_thread::yield(); // Отдаем CPU другим потокам вместо sleep
+        }
     }
     
     if (!header_ack_received) {
@@ -426,7 +430,8 @@ bool send_file_libsodium(int sock, const sockaddr_in &dest_addr, const std::vect
                         }
                     }
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                // Убрали sleep для более быстрой реакции
+                std::this_thread::yield(); // Отдаем CPU другим потокам
             }
             
             if (!chunk_ack_received) {
@@ -544,7 +549,11 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
                 }
             }
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        // Убрали sleep для более быстрой реакции (было 1ms)
+        // Используем busy-wait только если нет данных, чтобы не нагружать CPU
+        if (nrecv <= 0) {
+            std::this_thread::yield(); // Отдаем CPU другим потокам вместо sleep
+        }
     }
     
     if (!header_ack_received) {
@@ -627,7 +636,8 @@ bool send_file_codec(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
                 } else if (nrecv < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
                     // Игнорируем EAGAIN/EWOULDBLOCK (нет данных)
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                // Убрали sleep для более быстрой реакции
+                std::this_thread::yield(); // Отдаем CPU другим потокам
             }
             
             if (!chunk_ack_received) {
@@ -959,14 +969,21 @@ int main(int argc, char *argv[])
             if (use_codec)
             {
                 // Кодек: кодируем кадр целиком как сообщение и отправляем напрямую
-                std::vector<uint8_t> payload(buffer, buffer + nread);
+                // Оптимизация: избегаем лишнего копирования
+                std::vector<uint8_t> payload;
+                payload.reserve(nread);
+                payload.assign(buffer, buffer + nread);
                 std::vector<uint8_t> framed = codec.encodeMessage(payload);
                 
                 if (codec_params.injectErrors) {
                     framed = inject_errors(framed, codec_params.errorRate, codec_params.bitsM);
                 }
                 sendto(sock, framed.data(), framed.size(), 0, (sockaddr *)&dest_addr, sizeof(dest_addr));
-                std::cout << "📤 Отправлен кодированный кадр (" << nread << " байт)\n";
+                // Уменьшаем частоту вывода для производительности
+                static size_t frame_counter = 0;
+                if (++frame_counter % 100 == 0 || codec_params.debugMode) {
+                    std::cout << "📤 Отправлен кодированный кадр (" << nread << " байт)\n";
+                }
                 
                 if (codec_params.statsMode) {
                     static size_t stats_counter = 0;
