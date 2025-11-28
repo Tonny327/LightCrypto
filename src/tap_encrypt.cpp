@@ -99,8 +99,32 @@ bool send_codec_sync(int sock, const sockaddr_in &dest_addr, digitalcodec::Digit
     return true;
 }
 
+// Проверка существования TAP интерфейса
+bool tap_interface_exists(const std::string &dev_name)
+{
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0)
+    {
+        return false;
+    }
+
+    struct ifreq ifr{};
+    std::strncpy(ifr.ifr_name, dev_name.c_str(), IFNAMSIZ);
+    bool exists = (ioctl(sock, SIOCGIFFLAGS, &ifr) == 0);
+    close(sock);
+    return exists;
+}
+
 int open_tap(const std::string &dev_name)
 {
+    // Проверяем, что интерфейс уже существует (должен быть создан через скрипт)
+    if (!tap_interface_exists(dev_name))
+    {
+        std::cerr << "❌ Ошибка: TAP интерфейс " << dev_name << " не существует!\n";
+        std::cerr << "   Сначала создайте интерфейс через скрипт setup_tap_A.sh или setup_tap_B.sh\n";
+        exit(1);
+    }
+
     struct ifreq ifr{};
     int fd = open("/dev/net/tun", O_RDWR);
     if (fd < 0)
@@ -112,6 +136,7 @@ int open_tap(const std::string &dev_name)
     ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
     std::strncpy(ifr.ifr_name, dev_name.c_str(), IFNAMSIZ);
 
+    // Открываем существующий интерфейс (не создаем новый)
     if (ioctl(fd, TUNSETIFF, &ifr) < 0)
     {
         perror("ioctl TUSETIFF");

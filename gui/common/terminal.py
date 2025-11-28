@@ -170,36 +170,67 @@ class EmbeddedTerminal:
         """Запланировать обновление вывода, если еще не запланировано"""
         if not self._flush_scheduled:
             self._flush_scheduled = True
-            self.parent.after(5, self._flush_output_queue)
+            self.parent.after_idle(self._flush_output_queue)
 
     def _flush_output_queue(self):
-        """Выгрузить накопленные сообщения в текстовый виджет"""
+        """Выгрузить накопленные сообщения в текстовый виджет (с ограничением)"""
         try:
-            while True:
-                message, tag = self.output_queue.get_nowait()
-                self._append_message(message, tag)
-        except queue.Empty:
+            # Ограничиваем количество обрабатываемых сообщений за раз
+            # чтобы не блокировать GUI при большом потоке данных
+            max_messages_per_flush = 50
+            processed = 0
+            
+            while processed < max_messages_per_flush:
+                try:
+                    message, tag = self.output_queue.get_nowait()
+                    self._append_message(message, tag)
+                    processed += 1
+                except queue.Empty:
+                    break
+            
+            # Если очередь не пуста, планируем следующую обработку
+            if not self.output_queue.empty():
+                self._flush_scheduled = True
+                self.parent.after_idle(self._flush_output_queue)
+            else:
+                self._flush_scheduled = False
+                
+        except Exception as e:
+            # В случае ошибки сбрасываем флаг и логируем
             self._flush_scheduled = False
+            # Не используем print_to_terminal чтобы избежать рекурсии
+            print(f"Ошибка в _flush_output_queue: {e}")
 
     def _append_message(self, message: str, tag: Optional[str]):
         """Фактическая вставка строки в текстовый виджет"""
-        self.output_text.config(state=tk.NORMAL)
+        try:
+            self.output_text.config(state=tk.NORMAL)
 
-        # Проверка лимита буфера
-        if self.buffer_lines >= TERMINAL_BUFFER_LINES:
-            self.output_text.delete('1.0', '2.0')
-            self.buffer_lines -= 1
+            # Проверка лимита буфера (удаляем по 10 строк за раз для производительности)
+            if self.buffer_lines >= TERMINAL_BUFFER_LINES:
+                # Удаляем больше строк за раз при переполнении
+                lines_to_delete = min(100, self.buffer_lines - TERMINAL_BUFFER_LINES + 1000)
+                end_line = f'{lines_to_delete + 1}.0'
+                self.output_text.delete('1.0', end_line)
+                self.buffer_lines -= lines_to_delete
 
-        # Вставка текста
-        if tag:
-            self.output_text.insert(tk.END, message + '\n', tag)
-        else:
-            auto_tag = self._detect_message_type(message)
-            self.output_text.insert(tk.END, message + '\n', auto_tag)
+            # Вставка текста
+            if tag:
+                self.output_text.insert(tk.END, message + '\n', tag)
+            else:
+                auto_tag = self._detect_message_type(message)
+                self.output_text.insert(tk.END, message + '\n', auto_tag)
 
-        self.buffer_lines += 1
-        self.output_text.see(tk.END)
-        self.output_text.config(state=tk.DISABLED)
+            self.buffer_lines += 1
+            
+            # Автопрокрутка только каждые 10 сообщений для производительности
+            if self.buffer_lines % 10 == 0:
+                self.output_text.see(tk.END)
+            
+            self.output_text.config(state=tk.DISABLED)
+        except Exception as e:
+            # В случае ошибки просто игнорируем, чтобы не ломать GUI
+            self.output_text.config(state=tk.DISABLED)
     
     def _detect_message_type(self, message: str) -> Optional[str]:
         """Автоопределение типа сообщения по содержанию"""
@@ -338,6 +369,10 @@ class EmbeddedTerminal:
         try:
             buffer = b''
             last_output_time = 0
+            last_message_time = 0
+            message_count = 0
+            # Ограничение частоты вывода сообщений (максимум 10 сообщений в секунду)
+            min_message_interval = 0.1
             
             while self.running and self.master_fd:
                 # Используем select для неблокирующего чтения
@@ -352,7 +387,7 @@ class EmbeddedTerminal:
                         buffer += data
                         current_time = time.time()
                         
-                        # Обработка построчно
+                        # Обработка построчно с ограничением частоты
                         while b'\n' in buffer:
                             line, buffer = buffer.split(b'\n', 1)
                             text = line.decode('utf-8', errors='replace').rstrip()
@@ -360,18 +395,30 @@ class EmbeddedTerminal:
                             # Удаление ANSI escape sequences (опционально)
                             text_clean = self._strip_ansi(text)
                             
-                            if text_clean:
-                                self.print_to_terminal(text_clean)
+                            # Ограничение частоты вывода для предотвращения перегрузки GUI
+                            if text_clean and (current_time - last_message_time >= min_message_interval):
+                                # Фильтрация дублирующихся сообщений (например, повторяющиеся "Отправлен кадр")
+                                if not hasattr(self, '_last_message') or self._last_message != text_clean:
+                                    self.print_to_terminal(text_clean)
+                                    self._last_message = text_clean
+                                    last_message_time = current_time
+                                    message_count += 1
+                                elif current_time - last_message_time >= 1.0:
+                                    # Разрешаем дубликаты раз в секунду
+                                    self.print_to_terminal(text_clean)
+                                    last_message_time = current_time
+                            
                             last_output_time = current_time
                         
                         # Если в буфере есть данные без \n и прошло больше 0.5 сек, выводим
                         if buffer and (current_time - last_output_time > 0.5):
                             text = buffer.decode('utf-8', errors='replace').rstrip()
                             text_clean = self._strip_ansi(text)
-                            if text_clean:
+                            if text_clean and (current_time - last_message_time >= min_message_interval):
                                 self.print_to_terminal(text_clean)
-                            buffer = b''
-                            last_output_time = current_time
+                                buffer = b''
+                                last_output_time = current_time
+                                last_message_time = current_time
                     
                     except OSError:
                         break
