@@ -782,6 +782,15 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // Подключаем UDP сокет к удалённому адресу (для WSL совместимости)
+    // Это псевдо-подключение для UDP, позволяет использовать send()/recv()
+    if (connect(sock, (sockaddr *)&dest_addr, sizeof(dest_addr)) < 0)
+    {
+        perror("connect");
+        return 1;
+    }
+    std::cout << "✅ UDP сокет подключён к " << ip_str << ":" << port << "\n";
+
     // Объявляем ключи для всех режимов
     std::vector<unsigned char> rx_key(KEY_SIZE);
     std::vector<unsigned char> tx_key(KEY_SIZE);

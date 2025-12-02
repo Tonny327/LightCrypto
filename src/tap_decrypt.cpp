@@ -604,7 +604,7 @@ int main(int argc, char *argv[])
         perror("❌ bind() не удался");
         return 1;
     }
-    // std::cout << "✅ bind() выполнен успешно\n";
+    std::cout << "✅ Сокет привязан к " << ip_str << ":" << port << " (WSL-ready mode)\n";
 
     // Объявляем ключи для всех режимов
     std::vector<unsigned char> rx_key(KEY_SIZE);
@@ -636,7 +636,11 @@ int main(int argc, char *argv[])
             std::cerr << "❌ Ошибка при получении публичного ключа отправителя\n";
             return 1;
         }
-        std::cout << "📥 Публичный ключ отправителя получен\n";
+        
+        // Логируем адрес отправителя (для отладки WSL)
+        char sender_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &sender_addr.sin_addr, sender_ip, INET_ADDRSTRLEN);
+        std::cout << "📥 Публичный ключ отправителя получен от " << sender_ip << ":" << ntohs(sender_addr.sin_port) << "\n";
 
         // 2. Отправляем свой публичный ключ обратно
         sendto(sock, my_public_key, crypto_kx_PUBLICKEYBYTES, 0,
