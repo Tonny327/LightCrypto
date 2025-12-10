@@ -10,6 +10,9 @@
 #include <sstream>
 #include <stdexcept>
 #include <sodium.h>
+#include <unordered_set>
+#include <unordered_map>
+#include <random>
 
 namespace digitalcodec {
 
@@ -101,6 +104,11 @@ void DigitalCodec::syncStates(int32_t h1, int32_t h2) {
 }
 
 int32_t DigitalCodec::wrapM(int64_t v) const {
+    // Оптимизация для частого случая M=8
+    if (params_.bitsM == 8) {
+        return static_cast<int8_t>(static_cast<uint8_t>(v));
+    }
+    
     const int64_t mod = ipow2(params_.bitsM);
     int64_t r = v % mod;
     if (r < 0) r += mod;
@@ -115,18 +123,34 @@ int DigitalCodec::bytesPerSymbol() const {
 }
 
 void DigitalCodec::toBytes(int32_t v, std::vector<uint8_t>& out) const {
+    // Оптимизация для частого случая M=8 (1 байт)
+    if (params_.bitsM == 8) {
+        out.push_back(static_cast<uint8_t>(v));
+        return;
+    }
+    
     // Store as two's complement in little-endian byte order
     const int numBytes = bytesPerSymbol();
     uint32_t mod = static_cast<uint32_t>(ipow2(params_.bitsM));
     uint32_t u = static_cast<uint32_t>(v) & (mod - 1);
     
+    // Оптимизация: резервируем место заранее если возможно
+    const size_t old_size = out.size();
+    out.resize(old_size + numBytes);
+    uint8_t* ptr = out.data() + old_size;
+    
     for (int i = 0; i < numBytes; ++i) {
-        out.push_back(static_cast<uint8_t>(u & 0xFF));
+        ptr[i] = static_cast<uint8_t>(u & 0xFF);
         u >>= 8;
     }
 }
 
 int32_t DigitalCodec::fromBytes(const uint8_t* data) const {
+    // Оптимизация для частого случая M=8 (1 байт)
+    if (params_.bitsM == 8) {
+        return static_cast<int8_t>(data[0]);
+    }
+    
     const int numBytes = bytesPerSymbol();
     uint32_t val = 0;
     
@@ -159,6 +183,35 @@ int32_t DigitalCodec::digitalCodingFun(int funcIndex1Based, int32_t x, int32_t y
     const int32_t b = row[1];
     const int32_t q = row[2];
 
+    // Оптимизация для M=8: используем прямые операции без вызова wrapM
+    if (params_.bitsM == 8) {
+        auto mul8 = [](int32_t lhs, int32_t rhs) -> int32_t {
+            return static_cast<int8_t>(static_cast<uint8_t>(lhs * rhs));
+        };
+        auto add8 = [](int32_t lhs, int32_t rhs) -> int32_t {
+            return static_cast<int8_t>(static_cast<uint8_t>(lhs + rhs));
+        };
+        
+        switch (params_.funType) {
+            case 1: // a*x + b*y + q
+                return add8(add8(mul8(a, x), mul8(b, y)), q);
+            case 2: // a*x^2 + b*y + q
+                return add8(add8(mul8(a, mul8(x, x)), mul8(b, y)), q);
+            case 3: // a*x^2 + b*y^2 + q
+                return add8(add8(mul8(a, mul8(x, x)), mul8(b, mul8(y, y))), q);
+            case 4: // a*x^3 + b*y^2 + q
+                return add8(add8(mul8(a, mul8(mul8(x, x), x)), mul8(b, mul8(y, y))), q);
+            case 5: { // a*x + b*x*y + c*y + q
+                const int32_t c = row[2];
+                const int32_t q5 = row[3];
+                return add8(add8(add8(mul8(a, x), mul8(b, mul8(x, y))), mul8(c, y)), q5);
+            }
+            default:
+                return 0;
+        }
+    }
+    
+    // Общий случай для других M
     auto mul = [&](int64_t lhs, int64_t rhs) { return wrapM(lhs * rhs); };
     auto add = [&](int64_t lhs, int64_t rhs) { return wrapM(lhs + rhs); };
 
@@ -413,50 +466,99 @@ std::vector<uint8_t> DigitalCodec::decodeBytes(const std::vector<uint8_t> &coded
 // === High-level message API ===
 std::vector<uint8_t> DigitalCodec::packBytesToSymbols(const std::vector<uint8_t> &input) const {
     const int q = params_.bitsQ;
+    
+    // Оптимизация для частого случая Q=2 (4 символа на байт)
+    if (q == 2) {
+        const size_t estimated_size = input.size() * 4;
+        std::vector<uint8_t> symbols;
+        symbols.reserve(estimated_size);
+        const uint32_t mask = 0x3u; // 2 бита
+        
+        for (uint8_t b : input) {
+            symbols.push_back(static_cast<uint8_t>(b & mask));
+            symbols.push_back(static_cast<uint8_t>((b >> 2) & mask));
+            symbols.push_back(static_cast<uint8_t>((b >> 4) & mask));
+            symbols.push_back(static_cast<uint8_t>((b >> 6) & mask));
+        }
+        return symbols;
+    }
+    
     const uint32_t mask = (1u << q) - 1u;
+    const size_t estimated_size = (input.size() * 8 + q - 1) / q;
     std::vector<uint8_t> symbols;
-    symbols.reserve((input.size() * 8 + q - 1) / q);
+    symbols.reserve(estimated_size);
     uint32_t bitbuf = 0;
     int bitcount = 0;
-    for (uint8_t b : input) {
-        bitbuf |= (uint32_t)b << bitcount;
+    
+    // Оптимизация: обрабатываем байты пакетно
+    for (size_t i = 0; i < input.size(); ++i) {
+        bitbuf |= (uint32_t)input[i] << bitcount;
         bitcount += 8;
         while (bitcount >= q) {
-            uint8_t sym = static_cast<uint8_t>(bitbuf & mask);
-            symbols.push_back(sym);
+            symbols.push_back(static_cast<uint8_t>(bitbuf & mask));
             bitbuf >>= q;
             bitcount -= q;
         }
     }
     if (bitcount > 0) {
-        uint8_t sym = static_cast<uint8_t>(bitbuf & mask);
-        symbols.push_back(sym);
+        symbols.push_back(static_cast<uint8_t>(bitbuf & mask));
     }
     return symbols;
 }
 
 std::vector<uint8_t> DigitalCodec::unpackSymbolsToBytes(const std::vector<uint8_t> &symbols, size_t expected_len) const {
     const int q = params_.bitsQ;
+    
+    // Оптимизация для частого случая Q=2 (4 символа на байт)
+    if (q == 2) {
+        std::vector<uint8_t> out;
+        out.reserve(expected_len);
+        
+        // Обрабатываем все символы группами по 4, пока не достигнем expected_len
+        for (size_t i = 0; i + 3 < symbols.size() && out.size() < expected_len; i += 4) {
+            uint8_t byte = symbols[i] | (symbols[i+1] << 2) | (symbols[i+2] << 4) | (symbols[i+3] << 6);
+            out.push_back(byte);
+        }
+        
+        // Обработка остатка (если есть неполная группа из 4 символов)
+        size_t processed = (out.size() * 4);
+        if (processed < symbols.size() && out.size() < expected_len) {
+            size_t remaining = symbols.size() - processed;
+            uint8_t byte = 0;
+            for (size_t i = 0; i < remaining && i < 4; ++i) {
+                byte |= symbols[processed + i] << (i * 2);
+            }
+            out.push_back(byte);
+        }
+        
+        // Обрезаем до expected_len если нужно
+        if (out.size() > expected_len) {
+            out.resize(expected_len);
+        }
+        return out;
+    }
+    
     std::vector<uint8_t> out;
     out.reserve(expected_len);
     uint32_t bitbuf = 0;
     int bitcount = 0;
-    for (uint8_t sym : symbols) {
-        bitbuf |= ((uint32_t)sym) << bitcount;
+    
+    // Оптимизация: обрабатываем символы пакетно
+    for (size_t i = 0; i < symbols.size() && out.size() < expected_len; ++i) {
+        bitbuf |= ((uint32_t)symbols[i]) << bitcount;
         bitcount += q;
-        while (bitcount >= 8) {
-            uint8_t byte = static_cast<uint8_t>(bitbuf & 0xFFu);
-            out.push_back(byte);
+        while (bitcount >= 8 && out.size() < expected_len) {
+            out.push_back(static_cast<uint8_t>(bitbuf & 0xFFu));
             bitbuf >>= 8;
             bitcount -= 8;
-            if (out.size() == expected_len) return out;
         }
     }
     if (out.size() < expected_len && bitcount > 0) {
-        uint8_t byte = static_cast<uint8_t>(bitbuf & 0xFFu);
-        out.push_back(byte);
+        out.push_back(static_cast<uint8_t>(bitbuf & 0xFFu));
     }
-    if (out.size() > expected_len) out.resize(expected_len);
+    if (out.size() > expected_len) {
+        out.resize(expected_len);
+    }
     return out;
 }
 
@@ -653,11 +755,14 @@ std::vector<uint8_t> DigitalCodec::encodeMessage(const std::vector<uint8_t> &inp
     const size_t len = payload_to_encode.size();
     std::vector<uint8_t> symbols = packBytesToSymbols(payload_to_encode);
     std::vector<uint8_t> coded = encodeSymbols(symbols);
+    
+    // Оптимизация: резервируем место заранее и используем прямой доступ
     std::vector<uint8_t> framed;
     framed.reserve(2 + coded.size());
-    framed.push_back(static_cast<uint8_t>(len & 0xFF));
-    framed.push_back(static_cast<uint8_t>((len >> 8) & 0xFF));
-    framed.insert(framed.end(), coded.begin(), coded.end());
+    framed.resize(2 + coded.size());
+    framed[0] = static_cast<uint8_t>(len & 0xFF);
+    framed[1] = static_cast<uint8_t>((len >> 8) & 0xFF);
+    std::memcpy(framed.data() + 2, coded.data(), coded.size());
     return framed;
 }
 
