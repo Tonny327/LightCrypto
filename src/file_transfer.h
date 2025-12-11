@@ -175,3 +175,22 @@ private:
 
 } // namespace filetransfer
 
+// Forward declaration для DigitalCodec (вне namespace filetransfer)
+namespace digitalcodec {
+    class DigitalCodec;
+}
+
+namespace filetransfer {
+
+// Локальное кодирование файла в контейнер
+bool encode_file_to_container(const std::string& input_path, 
+                              const std::string& output_path, 
+                              digitalcodec::DigitalCodec& codec);
+
+// Локальное декодирование контейнера в файл
+bool decode_container_to_file(const std::string& container_path, 
+                               const std::string& output_path, 
+                               digitalcodec::DigitalCodec& codec);
+
+} // namespace filetransfer
+

@@ -1,4 +1,5 @@
 #include "file_transfer.h"
+#include "digital_codec.h"
 #include <fstream>
 #include <cstring>
 #include <iostream>
@@ -364,5 +365,230 @@ std::vector<uint32_t> FileReceiver::get_missing_chunks() const {
     return missing;
 }
 
-} // namespace filetransfer
+// Локальное кодирование файла в контейнер
+bool encode_file_to_container(const std::string& input_path, 
+                              const std::string& output_path, 
+                              digitalcodec::DigitalCodec& codec) {
+    std::cout << "📁 Начинаем локальное кодирование файла: " << input_path << "\n";
+    
+    // Загружаем файл
+    FileSender sender;
+    if (!sender.load_file(input_path)) {
+        std::cerr << "❌ Ошибка загрузки файла\n";
+        return false;
+    }
+    
+    // Сбрасываем состояния кодека перед началом кодирования
+    codec.reset();
+    
+    // Открываем выходной файл для записи
+    std::ofstream out_file(output_path, std::ios::binary);
+    if (!out_file.is_open()) {
+        std::cerr << "❌ Не удалось создать выходной файл: " << output_path << "\n";
+        return false;
+    }
+    
+    // 1. Кодируем и записываем заголовок файла
+    auto header_bytes = serialize_file_header(sender.get_header(), sender.get_filename());
+    std::vector<uint8_t> framed_header = codec.encodeMessage(header_bytes);
+    
+    // Записываем фрейм заголовка: [2 байта длины фрейма] + [данные фрейма]
+    // encodeMessage уже добавляет 2 байта длины payload в начале, но нам нужна длина всего фрейма
+    uint16_t frame_len = static_cast<uint16_t>(framed_header.size());
+    uint8_t len_bytes[2] = {static_cast<uint8_t>(frame_len & 0xFF), static_cast<uint8_t>((frame_len >> 8) & 0xFF)};
+    out_file.write(reinterpret_cast<const char*>(len_bytes), 2);
+    out_file.write(reinterpret_cast<const char*>(framed_header.data()), framed_header.size());
+    
+    if (!out_file.good()) {
+        std::cerr << "❌ Ошибка записи заголовка в файл\n";
+        out_file.close();
+        return false;
+    }
+    
+    std::cout << "✅ Заголовок файла закодирован и записан (" << framed_header.size() << " байт)\n";
+    
+    // 2. Кодируем и записываем чанки
+    uint32_t total_chunks = sender.get_total_chunks();
+    for (uint32_t i = 0; i < total_chunks; i++) {
+        ChunkHeader chunk_header;
+        std::vector<uint8_t> chunk_data;
+        
+        if (!sender.get_chunk(i, chunk_header, chunk_data)) {
+            std::cerr << "❌ Ошибка получения чанка " << i << "\n";
+            out_file.close();
+            return false;
+        }
+        
+        // Сериализуем чанк
+        auto chunk_bytes = serialize_chunk(chunk_header, chunk_data.data());
+        
+        // Кодируем чанк (состояния эволюционируют между чанками)
+        std::vector<uint8_t> framed_chunk = codec.encodeMessage(chunk_bytes);
+        
+        // Записываем фрейм чанка: [2 байта длины фрейма] + [данные фрейма]
+        uint16_t frame_len = static_cast<uint16_t>(framed_chunk.size());
+        uint8_t len_bytes[2] = {static_cast<uint8_t>(frame_len & 0xFF), static_cast<uint8_t>((frame_len >> 8) & 0xFF)};
+        out_file.write(reinterpret_cast<const char*>(len_bytes), 2);
+        out_file.write(reinterpret_cast<const char*>(framed_chunk.data()), framed_chunk.size());
+        
+        if (!out_file.good()) {
+            std::cerr << "❌ Ошибка записи чанка " << i << " в файл\n";
+            out_file.close();
+            return false;
+        }
+        
+        // Показываем прогресс
+        float progress = (100.0f * (i + 1)) / total_chunks;
+        std::cout << "📤 Закодирован чанк " << (i + 1) << "/" << total_chunks 
+                  << " (" << chunk_header.data_size << " байт, "
+                  << std::fixed << std::setprecision(1) << progress << "%)\n";
+    }
+    
+    out_file.close();
+    
+    std::cout << "✅ Файл успешно закодирован в контейнер: " << output_path << "\n";
+    std::cout << "📊 Размер исходного файла: " << sender.get_header().file_size << " байт\n";
+    std::cout << "📊 Количество чанков: " << total_chunks << "\n";
+    
+    return true;
+}
 
+// Локальное декодирование контейнера в файл
+bool decode_container_to_file(const std::string& container_path, 
+                               const std::string& output_path, 
+                               digitalcodec::DigitalCodec& codec) {
+    std::cout << "📥 Начинаем локальное декодирование контейнера: " << container_path << "\n";
+    
+    // Открываем контейнер для чтения
+    std::ifstream in_file(container_path, std::ios::binary);
+    if (!in_file.is_open()) {
+        std::cerr << "❌ Не удалось открыть контейнер: " << container_path << "\n";
+        return false;
+    }
+    
+    // Сбрасываем состояния кодека перед началом декодирования
+    codec.reset();
+    
+    FileReceiver receiver;
+    bool header_received = false;
+    std::string filename;
+    
+    // Читаем фреймы последовательно
+    while (true) {
+        // Читаем 2 байта длины фрейма (little-endian)
+        uint8_t len_bytes[2];
+        in_file.read(reinterpret_cast<char*>(len_bytes), 2);
+        
+        if (in_file.eof() || in_file.gcount() != 2) {
+            // Достигли конца файла
+            break;
+        }
+        
+        // Получаем длину фрейма
+        uint16_t frame_len = len_bytes[0] | (len_bytes[1] << 8);
+        
+        if (frame_len == 0 || frame_len > 65535) {
+            std::cerr << "❌ Неверная длина фрейма: " << frame_len << "\n";
+            in_file.close();
+            return false;
+        }
+        
+        // Читаем кодированные данные фрейма (frame_len - это длина всего фрейма включая 2 байта длины payload)
+        std::vector<uint8_t> framed_data(frame_len);
+        in_file.read(reinterpret_cast<char*>(framed_data.data()), frame_len);
+        
+        if (in_file.gcount() != frame_len) {
+            std::cerr << "❌ Не удалось прочитать полный фрейм (прочитано " 
+                      << in_file.gcount() << " из " << frame_len << " байт)\n";
+            in_file.close();
+            return false;
+        }
+        
+        // Декодируем фрейм (framed_data содержит весь фрейм с 2 байтами длины payload в начале)
+        // decodeMessage ожидает фрейм в формате [2 байта длины payload] + [кодированные данные]
+        std::vector<uint8_t> decoded_bytes = codec.decodeMessage(framed_data, 0);
+        
+        if (decoded_bytes.empty()) {
+            std::cerr << "❌ Ошибка декодирования фрейма\n";
+            in_file.close();
+            return false;
+        }
+        
+        // Проверяем, это заголовок или чанк
+        if (!header_received) {
+            // Пытаемся распарсить как заголовок файла
+            FileHeader header;
+            if (deserialize_file_header(decoded_bytes.data(), decoded_bytes.size(), header, filename)) {
+                std::cout << "📥 Получен заголовок файла: " << filename << "\n";
+                receiver.initialize(header, filename);
+                header_received = true;
+                continue;
+            } else {
+                std::cerr << "❌ Не удалось распарсить заголовок файла\n";
+                in_file.close();
+                return false;
+            }
+        }
+        
+        // Пытаемся распарсить как чанк
+        ChunkHeader chunk_header;
+        std::vector<uint8_t> chunk_data;
+        
+        if (deserialize_chunk(decoded_bytes.data(), decoded_bytes.size(), chunk_header, chunk_data)) {
+            // Добавляем чанк (CRC32 проверяется внутри deserialize_chunk)
+            if (!receiver.add_chunk(chunk_header, chunk_data)) {
+                std::cerr << "⚠️  Ошибка добавления чанка " << chunk_header.chunk_index << "\n";
+            }
+            
+            // Проверяем, все ли чанки получены
+            if (receiver.is_complete()) {
+                std::cout << "✅ Все чанки получены, сохраняем файл...\n";
+                
+                // Формируем путь для сохранения
+                std::string save_path = output_path;
+                if (save_path.empty() || save_path == "./received_file") {
+                    save_path = "./" + filename;
+                }
+                
+                if (receiver.save_file(save_path)) {
+                    // Проверяем целостность
+                    if (receiver.verify_integrity()) {
+                        std::cout << "✅ Проверка целостности пройдена!\n";
+                    } else {
+                        std::cerr << "⚠️  Проверка целостности не пройдена!\n";
+                        in_file.close();
+                        return false;
+                    }
+                    
+                    in_file.close();
+                    return true;
+                } else {
+                    std::cerr << "❌ Ошибка при сохранении файла\n";
+                    in_file.close();
+                    return false;
+                }
+            }
+        } else {
+            std::cerr << "⚠️  Не удалось распарсить фрейм как чанк (размер: " 
+                      << decoded_bytes.size() << " байт)\n";
+            // Продолжаем чтение, возможно это следующий фрейм
+        }
+    }
+    
+    in_file.close();
+    
+    if (!header_received) {
+        std::cerr << "❌ Заголовок файла не был получен\n";
+        return false;
+    }
+    
+    if (!receiver.is_complete()) {
+        std::cerr << "❌ Не все чанки получены (" << receiver.get_received_count() 
+                  << "/" << receiver.get_total_chunks() << ")\n";
+        return false;
+    }
+    
+    return true;
+}
+
+} // namespace filetransfer

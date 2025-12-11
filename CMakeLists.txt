@@ -37,3 +37,11 @@ target_link_libraries(tap_encrypt ${SODIUM_LIBRARIES} Threads::Threads digitalco
 # Компилируем tap_decrypt (с потоками)
 add_executable(tap_decrypt src/tap_decrypt.cpp)
 target_link_libraries(tap_decrypt ${SODIUM_LIBRARIES} Threads::Threads digitalcodec filetransfer)
+
+# Компилируем file_encode (локальное кодирование файлов)
+add_executable(file_encode src/file_encode.cpp)
+target_link_libraries(file_encode ${SODIUM_LIBRARIES} digitalcodec filetransfer)
+
+# Компилируем file_decode (локальное декодирование файлов)
+add_executable(file_decode src/file_decode.cpp)
+target_link_libraries(file_decode ${SODIUM_LIBRARIES} digitalcodec filetransfer)
