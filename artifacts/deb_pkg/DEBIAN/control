@@ -1,0 +1,7 @@
+Package: lightcrypto
+Version: 1.0.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: LightCrypto <noreply@example.com>
+Description: LightCrypto GUI with C++ helpers (PyInstaller onedir + C++ binaries)
