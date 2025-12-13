@@ -45,3 +45,11 @@ target_link_libraries(file_encode ${SODIUM_LIBRARIES} digitalcodec filetransfer)
 # Компилируем file_decode (локальное декодирование файлов)
 add_executable(file_decode src/file_decode.cpp)
 target_link_libraries(file_decode ${SODIUM_LIBRARIES} digitalcodec filetransfer)
+
+# Компилируем file_encode_plain (локальное кодирование БЕЗ шифрования)
+add_executable(file_encode_plain src/file_encode_plain.cpp)
+target_link_libraries(file_encode_plain filetransfer digitalcodec ${SODIUM_LIBRARIES})
+
+# Компилируем file_decode_plain (локальное декодирование БЕЗ шифрования)
+add_executable(file_decode_plain src/file_decode_plain.cpp)
+target_link_libraries(file_decode_plain filetransfer digitalcodec ${SODIUM_LIBRARIES})

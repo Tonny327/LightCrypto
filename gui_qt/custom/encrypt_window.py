@@ -40,8 +40,8 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
         switch_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
         switch_layout.addWidget(switch_label)
         
-        self.mode_switch = QCheckBox("Локальное кодирование файла")
-        self.mode_switch.setToolTip("Переключить между сетевым и локальным режимом")
+        self.mode_switch = QCheckBox("Кодирование без шифрования (маркеры + CRC32)")
+        self.mode_switch.setToolTip("Режим работы без шифрования: добавляет маркеры, номера строк и CRC32 для восстановления из шума")
         self.mode_switch.stateChanged.connect(lambda: self._on_mode_switch_changed())
         switch_layout.addWidget(self.mode_switch)
         
@@ -51,7 +51,7 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
     
     def _create_local_file_panel(self, parent, layout):
         """Панель для локального кодирования файлов"""
-        self.local_file_frame = QGroupBox(f"{EMOJI_FILE} Локальное кодирование файла")
+        self.local_file_frame = QGroupBox(f"{EMOJI_FILE} Кодирование без шифрования")
         local_layout = QVBoxLayout(self.local_file_frame)
         
         # Выбор входного файла
@@ -149,6 +149,10 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
                 if "TAP" in text or "🌐" in text or "Сетевые параметры" in text:
                     child.hide()
             
+            # Скрываем панель параметров кодека (не нужна в режиме без шифрования)
+            if hasattr(self, 'codec_panel') and self.codec_panel:
+                self.codec_panel.hide()
+            
             # Скрываем кнопку запуска из сетевой панели
             if hasattr(self, 'start_button'):
                 self.start_button.setParent(None)
@@ -165,6 +169,10 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
                 self.local_start_button_frame.show()
         else:
             # Сетевой режим - показываем сетевые панели
+            # Показываем панель параметров кодека (нужна для сетевого режима)
+            if hasattr(self, 'codec_panel') and self.codec_panel:
+                self.codec_panel.show()
+            
             for child in scroll_widget.findChildren(QGroupBox):
                 text = child.title()
                 if "TAP" in text or "🌐" in text or "Сетевые параметры" in text:
@@ -284,28 +292,11 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
                 QMessageBox.critical(self, "Ошибка", "Укажите путь для сохранения контейнера!")
                 return
             
-            # Получение параметров кодека
-            codec_params = self.codec_panel.get_params()
-            
-            if not codec_params['csv_path']:
-                QMessageBox.critical(self, "Ошибка", "CSV файл не выбран!")
-                return
-            
-            # Сохранение параметров
-            self.codec_panel.save_to_config()
-            self.config.save()
-            
-            # Формирование команды для локального кодирования
+            # Формирование команды для кодирования без шифрования
             cmd = [
-                FILE_ENCODE,
+                FILE_ENCODE_PLAIN,
                 input_path,
-                output_path,
-                '--codec', codec_params['csv_path'],
-                '--M', str(codec_params['M']),
-                '--Q', str(codec_params['Q']),
-                '--fun', str(codec_params['funType']),
-                '--h1', str(codec_params['h1']),
-                '--h2', str(codec_params['h2'])
+                output_path
             ]
             
             # Запуск

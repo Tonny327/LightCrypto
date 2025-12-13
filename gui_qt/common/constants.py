@@ -19,6 +19,8 @@ TAP_ENCRYPT = os.path.join(BUILD_DIR, 'tap_encrypt')
 TAP_DECRYPT = os.path.join(BUILD_DIR, 'tap_decrypt')
 FILE_ENCODE = os.path.join(BUILD_DIR, 'file_encode')
 FILE_DECODE = os.path.join(BUILD_DIR, 'file_decode')
+FILE_ENCODE_PLAIN = os.path.join(BUILD_DIR, 'file_encode_plain')
+FILE_DECODE_PLAIN = os.path.join(BUILD_DIR, 'file_decode_plain')
 
 # Скрипты setup
 SETUP_TAP_A = os.path.join(PROJECT_ROOT, 'setup_tap_A.sh')

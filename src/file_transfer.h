@@ -192,5 +192,13 @@ bool decode_container_to_file(const std::string& container_path,
                                const std::string& output_path, 
                                digitalcodec::DigitalCodec& codec);
 
+// Локальное кодирование файла в контейнер БЕЗ шифрования (только маркеры и CRC32)
+bool encode_file_to_container_plain(const std::string& input_path, 
+                                    const std::string& output_path);
+
+// Локальное декодирование контейнера в файл БЕЗ шифрования (поиск по маркерам и CRC32)
+bool decode_container_to_file_plain(const std::string& container_path, 
+                                    const std::string& output_path);
+
 } // namespace filetransfer
 

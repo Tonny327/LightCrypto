@@ -78,12 +78,38 @@ class TerminalReadThread(QThread):
                 
                 # Проверка завершения процесса
                 if self.process and self.process.poll() is not None:
+                    # Процесс завершился, но продолжаем читать оставшийся вывод
+                    # Делаем несколько попыток прочитать оставшийся буфер
+                    for _ in range(5):  # До 5 попыток прочитать оставшийся вывод
+                        ready, _, _ = select.select([self.master_fd], [], [], 0.1)
+                        if ready:
+                            try:
+                                data = os.read(self.master_fd, 4096)
+                                if data:
+                                    buffer += data
+                                else:
+                                    break
+                            except OSError:
+                                break
+                        else:
+                            break
+                    
                     # Вывести оставшийся буфер
                     if buffer:
-                        text = buffer.decode('utf-8', errors='replace').rstrip()
-                        text_clean = self._strip_ansi(text)
-                        if text_clean:
-                            self.output_received.emit(text_clean)
+                        # Обрабатываем весь буфер построчно
+                        while b'\n' in buffer:
+                            line, buffer = buffer.split(b'\n', 1)
+                            text = line.decode('utf-8', errors='replace').rstrip()
+                            text_clean = self._strip_ansi(text)
+                            if text_clean:
+                                self.output_received.emit(text_clean)
+                        
+                        # Выводим оставшуюся часть без \n
+                        if buffer:
+                            text = buffer.decode('utf-8', errors='replace').rstrip()
+                            text_clean = self._strip_ansi(text)
+                            if text_clean:
+                                self.output_received.emit(text_clean)
                     break
         
         except Exception as e:
