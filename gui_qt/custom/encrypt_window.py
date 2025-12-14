@@ -6,7 +6,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PyQt6.QtWidgets import QMessageBox, QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QFrame, QRadioButton, QCheckBox
+from PyQt6.QtWidgets import QMessageBox, QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QFileDialog, QFrame, QRadioButton, QCheckBox, QButtonGroup
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
@@ -31,27 +31,37 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
         self.setWindowTitle(self._window_title)
     
     def _create_mode_switch(self, parent, layout):
-        """Создает переключатель между сетевым и локальным режимом"""
+        """Создает переключатель между сетевым, plain и hybrid режимами"""
         switch_frame = QFrame()
-        switch_layout = QHBoxLayout(switch_frame)
+        switch_layout = QVBoxLayout(switch_frame)
         switch_layout.setContentsMargins(10, 10, 10, 10)
         
         switch_label = QLabel("Режим работы:")
         switch_label.setFont(QFont("Arial", 10, QFont.Weight.Bold))
         switch_layout.addWidget(switch_label)
         
-        self.mode_switch = QCheckBox("Кодирование без шифрования (маркеры + CRC32)")
-        self.mode_switch.setToolTip("Режим работы без шифрования: добавляет маркеры, номера строк и CRC32 для восстановления из шума")
-        self.mode_switch.stateChanged.connect(lambda: self._on_mode_switch_changed())
-        switch_layout.addWidget(self.mode_switch)
+        # Группа радиокнопок для выбора режима
+        self.local_mode_group = QRadioButton("Сетевой режим (по умолчанию)")
+        self.local_mode_group.setChecked(True)
+        self.local_mode_group.setToolTip("Передача через сеть с шифрованием DigitalCodec")
+        self.local_mode_group.toggled.connect(lambda: self._on_mode_switch_changed())
+        switch_layout.addWidget(self.local_mode_group)
         
-        switch_layout.addStretch()
+        self.plain_mode_radio = QRadioButton("Plain режим (без шифрования, только маркеры + CRC32)")
+        self.plain_mode_radio.setToolTip("Кодирование без шифрования: добавляет маркеры, номера строк и CRC32 для восстановления из шума")
+        self.plain_mode_radio.toggled.connect(lambda: self._on_mode_switch_changed())
+        switch_layout.addWidget(self.plain_mode_radio)
+        
+        self.hybrid_mode_radio = QRadioButton("Hybrid режим (шифрование DigitalCodec + plain фрагментация)")
+        self.hybrid_mode_radio.setToolTip("Сначала шифрует через DigitalCodec, затем применяет plain фрагментацию для передачи через радиочастотный канал")
+        self.hybrid_mode_radio.toggled.connect(lambda: self._on_mode_switch_changed())
+        switch_layout.addWidget(self.hybrid_mode_radio)
         
         layout.insertWidget(0, switch_frame)
     
     def _create_local_file_panel(self, parent, layout):
         """Панель для локального кодирования файлов"""
-        self.local_file_frame = QGroupBox(f"{EMOJI_FILE} Кодирование без шифрования")
+        self.local_file_frame = QGroupBox(f"{EMOJI_FILE} Локальное кодирование")
         local_layout = QVBoxLayout(self.local_file_frame)
         
         # Выбор входного файла
@@ -133,8 +143,10 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
             self.local_output_path = filename
     
     def _on_mode_switch_changed(self):
-        """Обработка переключения между сетевым и локальным режимом"""
-        is_local_mode = self.mode_switch.isChecked()
+        """Обработка переключения между сетевым, plain и hybrid режимами"""
+        is_plain_mode = self.plain_mode_radio.isChecked()
+        is_hybrid_mode = self.hybrid_mode_radio.isChecked()
+        is_local_mode = is_plain_mode or is_hybrid_mode
         
         scroll_area = self.main_layout.itemAt(0).widget()
         if not scroll_area:
@@ -149,9 +161,14 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
                 if "TAP" in text or "🌐" in text or "Сетевые параметры" in text:
                     child.hide()
             
-            # Скрываем панель параметров кодека (не нужна в режиме без шифрования)
+            # Показываем/скрываем панель параметров кодека в зависимости от режима
             if hasattr(self, 'codec_panel') and self.codec_panel:
-                self.codec_panel.hide()
+                if is_plain_mode:
+                    # Plain режим - скрываем панель кодека (не нужна)
+                    self.codec_panel.hide()
+                elif is_hybrid_mode:
+                    # Hybrid режим - показываем панель кодека (нужна для шифрования)
+                    self.codec_panel.show()
             
             # Скрываем кнопку запуска из сетевой панели
             if hasattr(self, 'start_button'):
@@ -205,7 +222,9 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
     def _on_mode_changed(self):
         """Обработка изменения режима работы (только для сетевых режимов)"""
         # Этот метод вызывается только когда переключатель в сетевом режиме
-        if hasattr(self, 'mode_switch') and self.mode_switch.isChecked():
+        is_plain_mode = hasattr(self, 'plain_mode_radio') and self.plain_mode_radio.isChecked()
+        is_hybrid_mode = hasattr(self, 'hybrid_mode_radio') and self.hybrid_mode_radio.isChecked()
+        if is_plain_mode or is_hybrid_mode:
             return  # Игнорируем, если включен локальный режим
         
         super()._on_mode_changed()
@@ -263,20 +282,12 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
     
     def _start_encryption(self):
         """Запуск шифрования с параметрами кодека"""
-        # Валидация параметров кодека
-        if not self.codec_panel.is_valid():
-            QMessageBox.critical(
-                self,
-                "Ошибка",
-                "Некорректные параметры кодека!\n"
-                "Проверьте выбор CSV и значения M, Q."
-            )
-            return
-        
         # Проверяем переключатель режимов
-        if hasattr(self, 'mode_switch') and self.mode_switch.isChecked():
-            # Локальный режим
-            mode = 'local_file'
+        is_plain_mode = hasattr(self, 'plain_mode_radio') and self.plain_mode_radio.isChecked()
+        is_hybrid_mode = hasattr(self, 'hybrid_mode_radio') and self.hybrid_mode_radio.isChecked()
+
+        if is_plain_mode or is_hybrid_mode:
+            # Локальный режим (plain или hybrid)
             input_path = self.local_input_entry.text().strip()
             output_path = self.local_output_entry.text().strip()
             
@@ -292,12 +303,38 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
                 QMessageBox.critical(self, "Ошибка", "Укажите путь для сохранения контейнера!")
                 return
             
-            # Формирование команды для кодирования без шифрования
-            cmd = [
-                FILE_ENCODE_PLAIN,
-                input_path,
-                output_path
-            ]
+            # Формирование команды в зависимости от режима
+            if is_plain_mode:
+                # Plain режим - без шифрования
+                cmd = [
+                    FILE_ENCODE_PLAIN,
+                    input_path,
+                    output_path
+                ]
+            elif is_hybrid_mode:
+                # Hybrid режим - с шифрованием через DigitalCodec
+                # Валидация параметров кодека
+                if not self.codec_panel.is_valid():
+                    QMessageBox.critical(
+                        self,
+                        "Ошибка",
+                        "Некорректные параметры кодека!\n"
+                        "Проверьте выбор CSV и значения M, Q."
+                    )
+                    return
+                
+                codec_params = self.codec_panel.get_params()
+                cmd = [
+                    FILE_ENCODE_HYBRID,
+                    input_path,
+                    output_path,
+                    '--codec', codec_params['csv_path'],
+                    '--M', str(codec_params['M']),
+                    '--Q', str(codec_params['Q']),
+                    '--fun', str(codec_params['funType']),
+                    '--h1', str(codec_params['h1']),
+                    '--h2', str(codec_params['h2'])
+                ]
             
             # Запуск
             self.terminal.run_process(cmd, use_xterm=False)
@@ -398,7 +435,11 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
     def on_terminal_process_finished(self):
         """Обработка завершения процесса - возврат кнопки в исходное состояние"""
         # Проверяем, какой режим активен
-        if hasattr(self, 'mode_switch') and self.mode_switch.isChecked():
+        is_plain_mode = hasattr(self, 'plain_mode_radio') and self.plain_mode_radio.isChecked()
+        is_hybrid_mode = hasattr(self, 'hybrid_mode_radio') and self.hybrid_mode_radio.isChecked()
+        is_local_mode = is_plain_mode or is_hybrid_mode
+
+        if is_local_mode:
             # Локальный режим - возвращаем локальную кнопку
             if hasattr(self, 'local_start_button'):
                 self.local_start_button.setText(f"{EMOJI_PLAY} ЗАПУСТИТЬ КОДИРОВАНИЕ")

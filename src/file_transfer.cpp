@@ -1431,4 +1431,493 @@ bool decode_container_to_file_plain(const std::string& container_path,
     }
 }
 
+// Гибридное кодирование: шифрование через DigitalCodec + plain фрагментация
+bool encode_file_to_container_hybrid(const std::string& input_path,
+                                     const std::string& output_path,
+                                     const std::string& intermediate_path,
+                                     digitalcodec::DigitalCodec& codec) {
+    std::cout << "🔐 Начинаем гибридное кодирование: " << input_path << "\n";
+    std::cout << "   Этап 1: Шифрование через DigitalCodec\n";
+    std::cout << "   Этап 2: Plain фрагментация зашифрованных данных\n";
+    
+    // Размер чанка данных (для plain фрагментации)
+    const size_t CHUNK_DATA_SIZE = 31;  // 31 байт данных на чанк
+    
+    // 1. Читаем исходный файл
+    std::ifstream in_file(input_path, std::ios::binary);
+    if (!in_file.is_open()) {
+        std::cerr << "❌ Не удалось открыть файл: " << input_path << "\n";
+        return false;
+    }
+    
+    std::vector<uint8_t> file_data((std::istreambuf_iterator<char>(in_file)),
+                                   std::istreambuf_iterator<char>());
+    in_file.close();
+    
+    if (file_data.empty()) {
+        std::cerr << "❌ Файл пуст\n";
+        return false;
+    }
+    
+    size_t original_file_size = file_data.size();
+    std::cout << "📊 Размер исходного файла: " << original_file_size << " байт\n";
+    
+    // 2. Шифруем через DigitalCodec
+    codec.reset();
+    std::vector<uint8_t> encrypted_data = codec.encodeMessage(file_data);
+    
+    std::cout << "✅ Файл зашифрован через DigitalCodec\n";
+    std::cout << "📊 Размер зашифрованных данных: " << encrypted_data.size() << " байт\n";
+    
+    // 3. Сохраняем промежуточный файл (если указан путь)
+    if (!intermediate_path.empty()) {
+        std::ofstream intermediate_file(intermediate_path, std::ios::binary);
+        if (intermediate_file.is_open()) {
+            intermediate_file.write(reinterpret_cast<const char*>(encrypted_data.data()), encrypted_data.size());
+            intermediate_file.close();
+            std::cout << "💾 Промежуточный зашифрованный файл сохранен: " << intermediate_path << "\n";
+        } else {
+            std::cerr << "⚠️  Не удалось сохранить промежуточный файл: " << intermediate_path << "\n";
+        }
+    }
+    
+    // 4. Применяем plain фрагментацию к зашифрованным данным
+    std::vector<std::vector<uint8_t>> chunks;
+    
+    // Первый чанк: исходная длина файла (4 байта) + данные (27 байт) = 31 байт
+    if (encrypted_data.size() > 0) {
+        std::vector<uint8_t> first_chunk;
+        first_chunk.reserve(CHUNK_DATA_SIZE);
+        
+        // Добавляем исходную длину файла (4 байта, little-endian)
+        uint32_t original_len = static_cast<uint32_t>(original_file_size);
+        first_chunk.push_back(static_cast<uint8_t>(original_len & 0xFF));
+        first_chunk.push_back(static_cast<uint8_t>((original_len >> 8) & 0xFF));
+        first_chunk.push_back(static_cast<uint8_t>((original_len >> 16) & 0xFF));
+        first_chunk.push_back(static_cast<uint8_t>((original_len >> 24) & 0xFF));
+        
+        // Добавляем данные из зашифрованного файла (27 байт)
+        size_t first_chunk_data_size = std::min(static_cast<size_t>(27), encrypted_data.size());
+        first_chunk.insert(first_chunk.end(), 
+                          encrypted_data.begin(), 
+                          encrypted_data.begin() + first_chunk_data_size);
+        
+        // Дополняем до 31 байта нулями (если нужно)
+        if (first_chunk.size() < CHUNK_DATA_SIZE) {
+            first_chunk.resize(CHUNK_DATA_SIZE, 0);
+        }
+        
+        chunks.push_back(first_chunk);
+    }
+    
+    // Остальные чанки: по 31 байт данных каждый (начиная с позиции 27)
+    size_t pos = 27;
+    while (pos < encrypted_data.size()) {
+        size_t chunk_len = std::min(CHUNK_DATA_SIZE, encrypted_data.size() - pos);
+        std::vector<uint8_t> chunk(encrypted_data.begin() + pos, 
+                                  encrypted_data.begin() + pos + chunk_len);
+        
+        // Дополняем до 31 байта нулями (если нужно)
+        if (chunk.size() < CHUNK_DATA_SIZE) {
+            chunk.resize(CHUNK_DATA_SIZE, 0);
+        }
+        
+        chunks.push_back(chunk);
+        pos += chunk_len;
+    }
+    
+    if (chunks.empty()) {
+        std::cerr << "❌ Не удалось создать чанки\n";
+        return false;
+    }
+    
+    std::cout << "📊 Создано чанков: " << chunks.size() << " (по " << CHUNK_DATA_SIZE << " байт данных)\n";
+    
+    // 5. Записываем чанки с маркерами
+    std::ofstream out_file(output_path, std::ios::binary);
+    if (!out_file.is_open()) {
+        std::cerr << "❌ Не удалось создать выходной файл: " << output_path << "\n";
+        return false;
+    }
+    
+    const uint8_t START_MARKER[] = {0xAA, 0x55, 0xAA, 0x55};
+    const uint8_t END_MARKER[] = {0x55, 0xAA, 0x55, 0xAA};
+    const size_t MARKER_SIZE = 4;
+    
+    uint16_t total_chunks = static_cast<uint16_t>(chunks.size());
+    
+    for (uint32_t i = 0; i < chunks.size(); i++) {
+        const std::vector<uint8_t>& chunk = chunks[i];
+        
+        // Вычисляем CRC32 чанка
+        uint32_t chunk_crc = crc32(chunk.data(), chunk.size());
+        
+        // Записываем маркер начала
+        out_file.write(reinterpret_cast<const char*>(START_MARKER), MARKER_SIZE);
+        
+        // Записываем номер чанка (2 байта, uint16_t, little-endian)
+        uint16_t chunk_num = static_cast<uint16_t>(i);
+        uint8_t chunk_num_bytes[2] = {
+            static_cast<uint8_t>(chunk_num & 0xFF),
+            static_cast<uint8_t>((chunk_num >> 8) & 0xFF)
+        };
+        out_file.write(reinterpret_cast<const char*>(chunk_num_bytes), 2);
+        
+        // Записываем общее количество чанков (2 байта, uint16_t, little-endian)
+        uint8_t total_chunks_bytes[2] = {
+            static_cast<uint8_t>(total_chunks & 0xFF),
+            static_cast<uint8_t>((total_chunks >> 8) & 0xFF)
+        };
+        out_file.write(reinterpret_cast<const char*>(total_chunks_bytes), 2);
+        
+        // Записываем CRC32 (4 байта, little-endian)
+        uint8_t crc_bytes[4] = {
+            static_cast<uint8_t>(chunk_crc & 0xFF),
+            static_cast<uint8_t>((chunk_crc >> 8) & 0xFF),
+            static_cast<uint8_t>((chunk_crc >> 16) & 0xFF),
+            static_cast<uint8_t>((chunk_crc >> 24) & 0xFF)
+        };
+        out_file.write(reinterpret_cast<const char*>(crc_bytes), 4);
+        
+        // Записываем данные чанка (31 байт)
+        out_file.write(reinterpret_cast<const char*>(chunk.data()), CHUNK_DATA_SIZE);
+        
+        // Записываем маркер конца
+        out_file.write(reinterpret_cast<const char*>(END_MARKER), MARKER_SIZE);
+    }
+    
+    out_file.close();
+    
+    std::cout << "✅ Гибридное кодирование завершено успешно!\n";
+    std::cout << "📊 Выходной файл: " << output_path << " (" << chunks.size() << " чанков)\n";
+    
+    return true;
+}
+
+// Гибридное декодирование: plain поиск фрагментов + расшифровка через DigitalCodec
+bool decode_container_to_file_hybrid(const std::string& container_path,
+                                     const std::string& output_path,
+                                     const std::string& intermediate_path,
+                                     digitalcodec::DigitalCodec& codec) {
+    std::cout << "📥 Начинаем гибридное декодирование контейнера: " << container_path << "\n";
+    std::cout << "   Этап 1: Поиск фрагментов в шуме (plain метод)\n";
+    std::cout << "   Этап 2: Сбор зашифрованных данных\n";
+    std::cout << "   Этап 3: Расшифровка через DigitalCodec\n";
+    
+    // Константы маркеров
+    const uint8_t START_MARKER[] = {0xAA, 0x55, 0xAA, 0x55};
+    const uint8_t END_MARKER[] = {0x55, 0xAA, 0x55, 0xAA};
+    const size_t MARKER_SIZE = 4;
+    const size_t CHUNK_DATA_SIZE = 31;  // Все фрагменты одинаковые: 31 байт данных
+    
+    // Открываем контейнер
+    std::ifstream in_file(container_path, std::ios::binary);
+    if (!in_file.is_open()) {
+        std::cerr << "❌ Не удалось открыть контейнер: " << container_path << "\n";
+        return false;
+    }
+    
+    // Читаем весь файл в буфер
+    in_file.seekg(0, std::ios::end);
+    size_t file_size = in_file.tellg();
+    in_file.seekg(0, std::ios::beg);
+    
+    std::vector<uint8_t> file_buffer(file_size);
+    in_file.read(reinterpret_cast<char*>(file_buffer.data()), file_size);
+    in_file.close();
+    
+    std::cout << "📊 Размер файла: " << file_size << " байт\n";
+    
+    // Ищем первый маркер
+    auto first_marker_pos = std::search(
+        file_buffer.begin(),
+        file_buffer.end(),
+        START_MARKER,
+        START_MARKER + MARKER_SIZE
+    );
+    
+    if (first_marker_pos == file_buffer.end()) {
+        std::cerr << "❌ Маркеры начала не найдены в файле!\n";
+        return false;
+    }
+    
+    size_t first_marker_offset = std::distance(file_buffer.begin(), first_marker_pos);
+    std::cout << "🔍 Найден первый маркер на позиции: " << first_marker_offset << " байт\n";
+    
+    // Словарь для хранения найденных чанков
+    std::map<uint32_t, std::vector<uint8_t>> found_chunks;
+    uint32_t chunks_found = 0;
+    uint32_t chunks_skipped = 0;
+    uint32_t chunks_crc_failed = 0;
+    uint32_t total_chunks = 0;
+    std::map<uint32_t, uint32_t> total_chunks_votes;
+    
+    size_t pos = first_marker_offset;
+    size_t consecutive_failures = 0;
+    const size_t MAX_CONSECUTIVE_FAILURES = 1000;
+    
+    // Ищем чанки по маркерам (та же логика, что и в decode_container_to_file_plain)
+    while (pos < file_buffer.size()) {
+        size_t old_pos = pos;
+        
+        // Ищем маркер начала
+        auto start_pos = std::search(
+            file_buffer.begin() + pos,
+            file_buffer.end(),
+            START_MARKER,
+            START_MARKER + MARKER_SIZE
+        );
+        
+        if (start_pos == file_buffer.end()) {
+            break;
+        }
+        
+        size_t chunk_start_pos = std::distance(file_buffer.begin(), start_pos) + MARKER_SIZE;
+        pos = chunk_start_pos;
+        
+        // Проверяем достаточность данных
+        const size_t FULL_CHUNK_SIZE = MARKER_SIZE + 2 + 2 + 4 + CHUNK_DATA_SIZE + MARKER_SIZE;
+        if (pos + FULL_CHUNK_SIZE - MARKER_SIZE > file_buffer.size()) {
+            break;
+        }
+        
+        // Читаем номер чанка (2 байта, uint16_t, little-endian)
+        uint16_t chunk_num = file_buffer[pos] | (file_buffer[pos + 1] << 8);
+        pos += 2;
+        
+        // Читаем общее количество чанков (2 байта, uint16_t, little-endian)
+        uint16_t chunk_total_chunks = file_buffer[pos] | (file_buffer[pos + 1] << 8);
+        pos += 2;
+        
+        // Читаем ожидаемый CRC32 (4 байта, little-endian)
+        uint32_t expected_crc = file_buffer[pos] |
+                               (file_buffer[pos + 1] << 8) |
+                               (file_buffer[pos + 2] << 16) |
+                               (file_buffer[pos + 3] << 24);
+        pos += 4;
+        
+        // Проверяем достаточность данных для чтения полного чанка
+        if (pos + CHUNK_DATA_SIZE + MARKER_SIZE > file_buffer.size()) {
+            break;
+        }
+        
+        // Извлекаем данные чанка (31 байт)
+        std::vector<uint8_t> chunk_bytes(
+            file_buffer.begin() + pos,
+            file_buffer.begin() + pos + CHUNK_DATA_SIZE
+        );
+        pos += CHUNK_DATA_SIZE;
+        
+        // Проверяем CRC32
+        uint32_t actual_crc = crc32(chunk_bytes.data(), chunk_bytes.size());
+        if (actual_crc != expected_crc) {
+            pos = chunk_start_pos - 1;
+            consecutive_failures++;
+            chunks_crc_failed++;
+            if (consecutive_failures >= MAX_CONSECUTIVE_FAILURES) {
+                std::cerr << "❌ Слишком много последовательных ошибок, прекращаю поиск\n";
+                break;
+            }
+            continue;
+        }
+        
+        // Проверяем маркер конца
+        if (pos + MARKER_SIZE > file_buffer.size()) {
+            break;
+        }
+        
+        bool end_marker_ok = std::equal(
+            END_MARKER,
+            END_MARKER + MARKER_SIZE,
+            file_buffer.begin() + pos
+        );
+        
+        if (!end_marker_ok) {
+            pos = chunk_start_pos - 1;
+            consecutive_failures++;
+            chunks_skipped++;
+            if (consecutive_failures >= MAX_CONSECUTIVE_FAILURES) {
+                std::cerr << "❌ Слишком много последовательных ошибок, прекращаю поиск\n";
+                break;
+            }
+            continue;
+        }
+        
+        pos += MARKER_SIZE;
+        consecutive_failures = 0;
+        
+        if (pos <= old_pos) {
+            std::cerr << "⚠️  Позиция не продвинулась, возможен бесконечный цикл. Прекращаю поиск.\n";
+            break;
+        }
+        
+        // Сохраняем чанк
+        found_chunks[chunk_num] = chunk_bytes;
+        chunks_found++;
+        total_chunks_votes[chunk_total_chunks]++;
+    }
+    
+    // Определяем правильное значение total_chunks
+    if (!total_chunks_votes.empty()) {
+        uint32_t most_common_total = 0;
+        uint32_t max_votes = 0;
+        for (const auto& pair : total_chunks_votes) {
+            if (pair.second > max_votes) {
+                max_votes = pair.second;
+                most_common_total = pair.first;
+            }
+        }
+        total_chunks = most_common_total;
+        std::cout << "✅ Определено количество чанков: " << total_chunks 
+                  << " (подтверждено " << max_votes << " валидными чанками)\n";
+    }
+    
+    if (total_chunks == 0) {
+        std::cerr << "❌ Не удалось определить общее количество чанков\n";
+        return false;
+    }
+    
+    if (chunks_found == 0) {
+        std::cerr << "❌ Не удалось найти ни одного чанка\n";
+        return false;
+    }
+    
+    std::cout << "📊 Найдено чанков: " << chunks_found << "/" << total_chunks << "\n";
+    std::cout << "📊 Пропущено: " << chunks_skipped << ", CRC32 ошибок: " << chunks_crc_failed << "\n";
+    
+    // Собираем зашифрованные данные из чанков
+    std::vector<uint8_t> encrypted_data;
+    uint32_t original_file_size = 0;
+    bool first_chunk_processed = false;
+    
+    for (uint32_t i = 0; i < total_chunks; i++) {
+        if (found_chunks.find(i) == found_chunks.end()) {
+            std::cerr << "⚠️  Чанк " << i << " не найден\n";
+            // Заполняем пропущенные чанки нулями
+            if (i == 0 && !first_chunk_processed) {
+                encrypted_data.insert(encrypted_data.end(), 27, 0);
+            } else {
+                encrypted_data.insert(encrypted_data.end(), CHUNK_DATA_SIZE, 0);
+            }
+            continue;
+        }
+        
+        const std::vector<uint8_t>& chunk = found_chunks[i];
+        
+        if (i == 0 && !first_chunk_processed) {
+            // Первый чанк содержит исходную длину файла (4 байта) + данные (27 байт) = 31 байт
+            if (chunk.size() >= 4) {
+                original_file_size = chunk[0] |
+                                   (chunk[1] << 8) |
+                                   (chunk[2] << 16) |
+                                   (chunk[3] << 24);
+                
+                std::cout << "📊 Исходный размер файла: " << original_file_size << " байт\n";
+                
+                // Добавляем данные из первого чанка (пропускаем первые 4 байта - длина)
+                if (chunk.size() > 4) {
+                    size_t data_size = std::min(static_cast<size_t>(27), chunk.size() - 4);
+                    encrypted_data.insert(encrypted_data.end(),
+                                         chunk.begin() + 4,
+                                         chunk.begin() + 4 + data_size);
+                } else {
+                    encrypted_data.insert(encrypted_data.end(), 27, 0);
+                }
+            } else {
+                encrypted_data.insert(encrypted_data.end(), 4, 0);
+                encrypted_data.insert(encrypted_data.end(), 27, 0);
+            }
+            first_chunk_processed = true;
+        } else {
+            // Остальные чанки содержат только данные (31 байт каждый)
+            if (chunk.size() >= CHUNK_DATA_SIZE) {
+                encrypted_data.insert(encrypted_data.end(), chunk.begin(), chunk.begin() + CHUNK_DATA_SIZE);
+            } else {
+                encrypted_data.insert(encrypted_data.end(), chunk.begin(), chunk.end());
+                encrypted_data.insert(encrypted_data.end(), CHUNK_DATA_SIZE - chunk.size(), 0);
+            }
+        }
+    }
+    
+    std::cout << "✅ Собрано зашифрованных данных: " << encrypted_data.size() << " байт\n";
+    
+    // Убираем padding из последнего чанка (если нужно)
+    // Вычисляем ожидаемый размер зашифрованных данных
+    // encodeMessage добавляет 2 байта длины в начале, поэтому нужно учесть это
+    // Но мы не знаем точный размер, поэтому просто убираем завершающие нули
+    while (!encrypted_data.empty() && encrypted_data.back() == 0) {
+        encrypted_data.pop_back();
+    }
+    
+    // Сохраняем промежуточный файл (если указан путь)
+    if (!intermediate_path.empty()) {
+        std::ofstream intermediate_file(intermediate_path, std::ios::binary);
+        if (intermediate_file.is_open()) {
+            intermediate_file.write(reinterpret_cast<const char*>(encrypted_data.data()), encrypted_data.size());
+            intermediate_file.close();
+            std::cout << "💾 Промежуточный зашифрованный файл сохранен: " << intermediate_path << "\n";
+        } else {
+            std::cerr << "⚠️  Не удалось сохранить промежуточный файл: " << intermediate_path << "\n";
+        }
+    }
+    
+    // Расшифровываем через DigitalCodec
+    codec.reset();
+    std::vector<uint8_t> decrypted_data;
+    
+    try {
+        // Используем original_file_size как expected_len, если он известен, иначе 0 (автоопределение)
+        size_t expected_len = (original_file_size > 0) ? original_file_size : 0;
+        decrypted_data = codec.decodeMessage(encrypted_data, expected_len);
+    } catch (const std::exception& e) {
+        std::cerr << "❌ Ошибка расшифровки через DigitalCodec: " << e.what() << "\n";
+        return false;
+    }
+    
+    // Обрезаем до исходной длины (если нужно)
+    if (original_file_size > 0 && decrypted_data.size() > original_file_size) {
+        decrypted_data.resize(original_file_size);
+    }
+    
+    std::cout << "✅ Расшифровано данных: " << decrypted_data.size() << " байт\n";
+    
+    // Сохраняем исходный файл
+    std::ofstream out_file(output_path, std::ios::binary);
+    if (!out_file.is_open()) {
+        std::cerr << "❌ Не удалось создать выходной файл: " << output_path << "\n";
+        return false;
+    }
+    
+    out_file.write(reinterpret_cast<const char*>(decrypted_data.data()), decrypted_data.size());
+    out_file.close();
+    
+    // Вычисляем статистику восстановления
+    double chunks_recovery_rate = 0.0;
+    if (total_chunks > 0) {
+        chunks_recovery_rate = (double)chunks_found / total_chunks * 100.0;
+    }
+    
+    double data_recovery_rate = 0.0;
+    if (original_file_size > 0) {
+        data_recovery_rate = (double)decrypted_data.size() / original_file_size * 100.0;
+    }
+    
+    std::cout << "\n📊 Итоговая статистика восстановления:\n";
+    std::cout << "   📦 Чанков восстановлено: " << chunks_found << "/" << total_chunks;
+    if (total_chunks > 0) {
+        std::cout << " (" << std::fixed << std::setprecision(1) << chunks_recovery_rate << "%)";
+    }
+    std::cout << "\n";
+    std::cout << "   📄 Данных восстановлено: " << decrypted_data.size() << "/" << original_file_size << " байт";
+    if (original_file_size > 0) {
+        std::cout << " (" << std::fixed << std::setprecision(1) << data_recovery_rate << "%)";
+    }
+    std::cout << "\n";
+    
+    std::cout << "✅ Гибридное декодирование завершено успешно!\n";
+    std::cout << "📊 Восстановленный файл: " << output_path << " (" << decrypted_data.size() << " байт)\n";
+    
+    return true;
+}
+
 } // namespace filetransfer

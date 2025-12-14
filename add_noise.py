@@ -168,13 +168,15 @@ def add_noise_to_file(input_path, output_path, noise_intensity=10, corruption_pr
                 # Иногда добавляем искажённые фрагменты предыдущих чанков
                 if chunk_idx > 0 and random.random() < 0.4:
                     prev_chunk = all_chunks[chunk_idx - 1][1]
-                    fragment_start = random.randint(0, len(prev_chunk) - 20)
-                    fragment_end = random.randint(fragment_start + 5, min(fragment_start + 30, len(prev_chunk)))
-                    fragment = prev_chunk[fragment_start:fragment_end]
-                    # Искажаем фрагмент
-                    corrupted_fragment = create_corrupted_fragment(fragment, 0.15)
-                    result.extend(corrupted_fragment)
-                    result.extend(bytes([random.randint(0, 255) for _ in range(random.randint(5, 20))]))
+                    if len(prev_chunk) > 20:
+                        fragment_start = random.randint(0, max(0, len(prev_chunk) - 20))
+                        fragment_end = random.randint(fragment_start + 5, min(fragment_start + 30, len(prev_chunk)))
+                        if fragment_end > fragment_start:
+                            fragment = prev_chunk[fragment_start:fragment_end]
+                            # Искажаем фрагмент
+                            corrupted_fragment = create_corrupted_fragment(fragment, 0.15)
+                            result.extend(corrupted_fragment)
+                            result.extend(bytes([random.randint(0, 255) for _ in range(random.randint(5, 20))]))
             
             # Добавляем правильный чанк
             result.extend(chunk)
@@ -186,13 +188,14 @@ def add_noise_to_file(input_path, output_path, noise_intensity=10, corruption_pr
                 result.extend(noise)
                 
                 # Иногда добавляем дубликат части чанка (искажённый)
-                if random.random() < 0.3:
-                    fragment_start = random.randint(MARKER_SIZE, len(chunk) - 20)
+                if random.random() < 0.3 and len(chunk) > 20:
+                    fragment_start = random.randint(MARKER_SIZE, max(MARKER_SIZE, len(chunk) - 20))
                     fragment_end = random.randint(fragment_start + 10, min(fragment_start + 40, len(chunk)))
-                    fragment = chunk[fragment_start:fragment_end]
-                    corrupted_fragment = create_corrupted_fragment(fragment, 0.2)
-                    result.extend(corrupted_fragment)
-                    result.extend(bytes([random.randint(0, 255) for _ in range(random.randint(3, 15))]))
+                    if fragment_end > fragment_start:
+                        fragment = chunk[fragment_start:fragment_end]
+                        corrupted_fragment = create_corrupted_fragment(fragment, 0.2)
+                        result.extend(corrupted_fragment)
+                        result.extend(bytes([random.randint(0, 255) for _ in range(random.randint(3, 15))]))
         
         # Добавляем ОГРОМНОЕ количество шума в конец
         end_noise_size = random.randint(50, 150)
@@ -211,11 +214,13 @@ def add_noise_to_file(input_path, output_path, noise_intensity=10, corruption_pr
                 result.extend(partial)
                 
                 # Искажённый фрагмент последнего чанка
-                fragment_start = random.randint(0, len(last_chunk) - 30)
-                fragment_end = random.randint(fragment_start + 10, min(fragment_start + 50, len(last_chunk)))
-                fragment = last_chunk[fragment_start:fragment_end]
-                corrupted_fragment = create_corrupted_fragment(fragment, 0.25)
-                result.extend(corrupted_fragment)
+                if len(last_chunk) > 30:
+                    fragment_start = random.randint(0, max(0, len(last_chunk) - 30))
+                    fragment_end = random.randint(fragment_start + 10, min(fragment_start + 50, len(last_chunk)))
+                    if fragment_end > fragment_start:
+                        fragment = last_chunk[fragment_start:fragment_end]
+                        corrupted_fragment = create_corrupted_fragment(fragment, 0.25)
+                        result.extend(corrupted_fragment)
                 
                 # Ещё случайные байты
                 result.extend(bytes([random.randint(0, 255) for _ in range(random.randint(5, 20))]))

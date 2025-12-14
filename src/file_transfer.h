@@ -200,5 +200,17 @@ bool encode_file_to_container_plain(const std::string& input_path,
 bool decode_container_to_file_plain(const std::string& container_path, 
                                     const std::string& output_path);
 
+// Гибридное кодирование: шифрование через DigitalCodec + plain фрагментация
+bool encode_file_to_container_hybrid(const std::string& input_path,
+                                     const std::string& output_path,
+                                     const std::string& intermediate_path,
+                                     digitalcodec::DigitalCodec& codec);
+
+// Гибридное декодирование: plain поиск фрагментов + расшифровка через DigitalCodec
+bool decode_container_to_file_hybrid(const std::string& container_path,
+                                     const std::string& output_path,
+                                     const std::string& intermediate_path,
+                                     digitalcodec::DigitalCodec& codec);
+
 } // namespace filetransfer
 

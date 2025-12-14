@@ -21,6 +21,8 @@ FILE_ENCODE = os.path.join(BUILD_DIR, 'file_encode')
 FILE_DECODE = os.path.join(BUILD_DIR, 'file_decode')
 FILE_ENCODE_PLAIN = os.path.join(BUILD_DIR, 'file_encode_plain')
 FILE_DECODE_PLAIN = os.path.join(BUILD_DIR, 'file_decode_plain')
+FILE_ENCODE_HYBRID = os.path.join(BUILD_DIR, 'file_encode_hybrid')
+FILE_DECODE_HYBRID = os.path.join(BUILD_DIR, 'file_decode_hybrid')
 
 # Скрипты setup
 SETUP_TAP_A = os.path.join(PROJECT_ROOT, 'setup_tap_A.sh')

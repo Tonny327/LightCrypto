@@ -53,3 +53,11 @@ target_link_libraries(file_encode_plain filetransfer digitalcodec ${SODIUM_LIBRA
 # Компилируем file_decode_plain (локальное декодирование БЕЗ шифрования)
 add_executable(file_decode_plain src/file_decode_plain.cpp)
 target_link_libraries(file_decode_plain filetransfer digitalcodec ${SODIUM_LIBRARIES})
+
+# Компилируем file_encode_hybrid (гибридное кодирование: DigitalCodec + plain фрагментация)
+add_executable(file_encode_hybrid src/file_encode_hybrid.cpp)
+target_link_libraries(file_encode_hybrid filetransfer digitalcodec ${SODIUM_LIBRARIES})
+
+# Компилируем file_decode_hybrid (гибридное декодирование: plain поиск + DigitalCodec расшифровка)
+add_executable(file_decode_hybrid src/file_decode_hybrid.cpp)
+target_link_libraries(file_decode_hybrid filetransfer digitalcodec ${SODIUM_LIBRARIES})
