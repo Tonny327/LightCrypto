@@ -180,11 +180,14 @@ def analyze_csv(csv_path: str) -> Dict[str, any]:
 
 def check_sudo_access() -> bool:
     """
-    Проверка наличия sudo доступа без пароля
+    Проверка наличия sudo доступа без пароля (только для Linux)
     
     Returns:
-        True если sudo доступен без пароля
+        True если sudo доступен без пароля (Linux) или всегда True для Windows
     """
+    if os.name == 'nt':  # Windows
+        return True  # Не требуется на Windows
+    
     try:
         result = subprocess.run(['sudo', '-n', 'true'],
                               capture_output=True,
@@ -196,14 +199,17 @@ def check_sudo_access() -> bool:
 
 def check_tap_interface(tap_name: str) -> bool:
     """
-    Проверка существования TAP интерфейса
+    Проверка существования TAP интерфейса (только для Linux)
     
     Args:
         tap_name: Имя интерфейса (например, 'tap0')
     
     Returns:
-        True если интерфейс существует и активен
+        True если интерфейс существует и активен (Linux) или False для Windows
     """
+    if os.name == 'nt':  # Windows
+        return False  # TAP не поддерживается на Windows
+    
     try:
         result = subprocess.run(['ip', 'link', 'show', tap_name],
                               capture_output=True,
@@ -215,7 +221,7 @@ def check_tap_interface(tap_name: str) -> bool:
 
 def get_tap_status(tap_name: str) -> Tuple[bool, str]:
     """
-    Получить статус TAP интерфейса
+    Получить статус TAP интерфейса (только для Linux)
     
     Args:
         tap_name: Имя интерфейса
@@ -223,6 +229,9 @@ def get_tap_status(tap_name: str) -> Tuple[bool, str]:
     Returns:
         Tuple (exists: bool, ip: str)
     """
+    if os.name == 'nt':  # Windows
+        return False, ''
+    
     if not check_tap_interface(tap_name):
         return False, ''
     
@@ -246,18 +255,44 @@ def get_tap_status(tap_name: str) -> Tuple[bool, str]:
 
 def check_build_files() -> Tuple[bool, List[str]]:
     """
-    Проверка наличия исполняемых файлов
+    Проверка наличия исполняемых файлов для локального режима
     
     Returns:
         Tuple (all_exist: bool, missing_files: list)
     """
     missing = []
     
-    if not os.path.isfile(TAP_ENCRYPT):
-        missing.append('tap_encrypt')
+    # Проверяем локальные программы (основные для Windows)
+    local_programs = [
+        (FILE_ENCODE, 'file_encode'),
+        (FILE_DECODE, 'file_decode'),
+        (FILE_ENCODE_PLAIN, 'file_encode_plain'),
+        (FILE_DECODE_PLAIN, 'file_decode_plain'),
+        (FILE_ENCODE_HYBRID, 'file_encode_hybrid'),
+        (FILE_DECODE_HYBRID, 'file_decode_hybrid'),
+    ]
     
-    if not os.path.isfile(TAP_DECRYPT):
-        missing.append('tap_decrypt')
+    # Для Windows также проверяем Release директорию
+    if os.name == 'nt':
+        local_programs.extend([
+            (FILE_ENCODE_RELEASE, 'file_encode'),
+            (FILE_DECODE_RELEASE, 'file_decode'),
+            (FILE_ENCODE_PLAIN_RELEASE, 'file_encode_plain'),
+            (FILE_DECODE_PLAIN_RELEASE, 'file_decode_plain'),
+            (FILE_ENCODE_HYBRID_RELEASE, 'file_encode_hybrid'),
+            (FILE_DECODE_HYBRID_RELEASE, 'file_decode_hybrid'),
+        ])
+    
+    # Проверяем наличие хотя бы одной версии каждого файла
+    found_programs = set()
+    for file_path, program_name in local_programs:
+        if os.path.isfile(file_path):
+            found_programs.add(program_name)
+    
+    # Определяем отсутствующие программы
+    required_programs = {'file_encode', 'file_decode', 'file_encode_plain', 
+                        'file_decode_plain', 'file_encode_hybrid', 'file_decode_hybrid'}
+    missing = list(required_programs - found_programs)
     
     return len(missing) == 0, missing
 

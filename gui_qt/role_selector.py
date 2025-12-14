@@ -3,6 +3,7 @@ LightCrypto GUI - Окно выбора роли (PyQt6)
 Выбор между Encrypt (отправитель) и Decrypt (получатель)
 """
 
+import os
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QPushButton, QFrame)
 from PyQt6.QtCore import Qt
@@ -26,10 +27,16 @@ class RoleSelectorWindow(BaseWindow):
             on_select: Callback при выборе роли (принимает 'encrypt' или 'decrypt')
             on_back: Callback для возврата назад
         """
-        super().__init__("🔐 LightCrypto - Выбор роли", config)
+        # Заголовок окна зависит от типа шифрования
+        if cipher_type == 'custom':
+            title = "🔐 LightCrypto - Custom Codec"
+        else:
+            title = "🔐 LightCrypto - Выбор роли"
+        super().__init__(title, config)
         self.cipher_type = cipher_type
         self.on_select = on_select
         self.on_back_callback = on_back
+        self.show_back_button = on_back is not None  # Показывать кнопку "Назад" только если есть callback
         
         self.setFixedSize(ROLE_SELECTOR_WIDTH, ROLE_SELECTOR_HEIGHT)
         self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.MSWindowsFixedSizeDialogHint)
@@ -57,7 +64,10 @@ class RoleSelectorWindow(BaseWindow):
         self.main_layout.addWidget(header_frame)
         
         # Инструкция
-        instruction = QLabel("Выберите роль компьютера:")
+        if os.name == 'nt':  # Windows - показываем локальный режим
+            instruction = QLabel("Выберите режим работы:")
+        else:
+            instruction = QLabel("Выберите роль компьютера:")
         instruction_font = QFont('Arial', 14, QFont.Weight.Bold)
         instruction.setFont(instruction_font)
         instruction.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -68,45 +78,70 @@ class RoleSelectorWindow(BaseWindow):
         buttons_layout.setSpacing(15)
         buttons_layout.setContentsMargins(15, 0, 15, 0)
         
-        # Кнопка Encrypt
-        encrypt_card = self._create_role_card(
-            emoji=EMOJI_ENCRYPT,
-            title="Отправитель",
-            subtitle="(Encrypt)",
-            description="Компьютер A",
-            color=COLOR_ENCRYPT_DARK,
-            command=lambda: self._on_role_choice('encrypt')
-        )
-        buttons_layout.addWidget(encrypt_card)
-        
-        # Кнопка Decrypt
-        decrypt_card = self._create_role_card(
-            emoji=EMOJI_DECRYPT,
-            title="Получатель",
-            subtitle="(Decrypt)",
-            description="Компьютер B",
-            color=COLOR_DECRYPT_DARK,
-            command=lambda: self._on_role_choice('decrypt')
-        )
-        buttons_layout.addWidget(decrypt_card)
+        if os.name == 'nt':  # Windows - локальный режим
+            # Кнопка "Локальное кодирование"
+            local_encode_card = self._create_role_card(
+                emoji='📤',
+                title="Кодирование",
+                subtitle="(Encode)",
+                description="Локальный режим",
+                color=COLOR_ENCRYPT_DARK,
+                command=lambda: self._on_role_choice('local_encode')
+            )
+            buttons_layout.addWidget(local_encode_card)
+            
+            # Кнопка "Локальное декодирование"
+            local_decode_card = self._create_role_card(
+                emoji='📥',
+                title="Декодирование",
+                subtitle="(Decode)",
+                description="Локальный режим",
+                color=COLOR_DECRYPT_DARK,
+                command=lambda: self._on_role_choice('local_decode')
+            )
+            buttons_layout.addWidget(local_decode_card)
+        else:
+            # Linux - сетевой режим
+            # Кнопка Encrypt
+            encrypt_card = self._create_role_card(
+                emoji=EMOJI_ENCRYPT,
+                title="Отправитель",
+                subtitle="(Encrypt)",
+                description="Компьютер A",
+                color=COLOR_ENCRYPT_DARK,
+                command=lambda: self._on_role_choice('encrypt')
+            )
+            buttons_layout.addWidget(encrypt_card)
+            
+            # Кнопка Decrypt
+            decrypt_card = self._create_role_card(
+                emoji=EMOJI_DECRYPT,
+                title="Получатель",
+                subtitle="(Decrypt)",
+                description="Компьютер B",
+                color=COLOR_DECRYPT_DARK,
+                command=lambda: self._on_role_choice('decrypt')
+            )
+            buttons_layout.addWidget(decrypt_card)
         
         self.main_layout.addLayout(buttons_layout)
         self.main_layout.addStretch()
         
-        # Кнопка "Назад"
-        back_button = QPushButton("← Назад")
-        back_button.setFixedWidth(150)
-        back_button.clicked.connect(self._on_back)
-        back_button.setStyleSheet("""
-            QPushButton {
-                background-color: #2d2d2d;
-                color: white;
-            }
-            QPushButton:hover {
-                background-color: #3d3d3d;
-            }
-        """)
-        self.main_layout.addWidget(back_button, alignment=Qt.AlignmentFlag.AlignCenter)
+        # Кнопка "Назад" - показываем только если есть callback
+        if self.show_back_button:
+            back_button = QPushButton("← Назад")
+            back_button.setFixedWidth(150)
+            back_button.clicked.connect(self._on_back)
+            back_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #2d2d2d;
+                    color: white;
+                }
+                QPushButton:hover {
+                    background-color: #3d3d3d;
+                }
+            """)
+            self.main_layout.addWidget(back_button, alignment=Qt.AlignmentFlag.AlignCenter)
     
     def _create_role_card(self, emoji, title, subtitle, description, color, command):
         """Создание карточки выбора роли"""

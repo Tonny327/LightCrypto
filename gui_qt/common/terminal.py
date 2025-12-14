@@ -11,36 +11,51 @@ import subprocess
 import threading
 import os
 import signal
-import pty
-import select
-import fcntl
 import re
 import time
+import sys
 from typing import List, Optional
+
+# Кроссплатформенные импорты
+if os.name != 'nt':  # Linux/Unix
+    import pty
+    import select
+    import fcntl
+else:  # Windows
+    import queue
+    import msvcrt
 
 from .constants import *
 
 
 class TerminalReadThread(QThread):
-    """Поток для чтения вывода процесса через PTY"""
+    """Поток для чтения вывода процесса (кроссплатформенный)"""
     
     output_received = pyqtSignal(str)
     process_finished = pyqtSignal()
     
-    def __init__(self, master_fd, process):
+    def __init__(self, process, master_fd=None):
         super().__init__()
-        self.master_fd = master_fd
         self.process = process
+        self.master_fd = master_fd  # Только для Linux PTY
         self.running = True
+        self.is_windows = os.name == 'nt'
     
     def run(self):
         """Основной цикл чтения"""
+        if self.is_windows:
+            self._run_windows()
+        else:
+            self._run_linux()
+    
+    def _run_linux(self):
+        """Чтение через PTY (Linux)"""
         try:
+            import select
             buffer = b''
             last_output_time = 0
             
             while self.running and self.master_fd:
-                # Используем select для неблокирующего чтения
                 ready, _, _ = select.select([self.master_fd], [], [], 0.05)
                 
                 if ready:
@@ -52,19 +67,14 @@ class TerminalReadThread(QThread):
                         buffer += data
                         current_time = time.time()
                         
-                        # Обработка построчно
                         while b'\n' in buffer:
                             line, buffer = buffer.split(b'\n', 1)
                             text = line.decode('utf-8', errors='replace').rstrip()
-                            
-                            # Удаление ANSI escape sequences
                             text_clean = self._strip_ansi(text)
-                            
                             if text_clean:
                                 self.output_received.emit(text_clean)
                             last_output_time = current_time
                         
-                        # Если в буфере есть данные без \n и прошло больше 0.5 сек, выводим
                         if buffer and (current_time - last_output_time > 0.5):
                             text = buffer.decode('utf-8', errors='replace').rstrip()
                             text_clean = self._strip_ansi(text)
@@ -76,11 +86,9 @@ class TerminalReadThread(QThread):
                     except OSError:
                         break
                 
-                # Проверка завершения процесса
                 if self.process and self.process.poll() is not None:
-                    # Процесс завершился, но продолжаем читать оставшийся вывод
-                    # Делаем несколько попыток прочитать оставшийся буфер
-                    for _ in range(5):  # До 5 попыток прочитать оставшийся вывод
+                    # Читаем оставшийся вывод
+                    for _ in range(5):
                         ready, _, _ = select.select([self.master_fd], [], [], 0.1)
                         if ready:
                             try:
@@ -94,17 +102,13 @@ class TerminalReadThread(QThread):
                         else:
                             break
                     
-                    # Вывести оставшийся буфер
                     if buffer:
-                        # Обрабатываем весь буфер построчно
                         while b'\n' in buffer:
                             line, buffer = buffer.split(b'\n', 1)
                             text = line.decode('utf-8', errors='replace').rstrip()
                             text_clean = self._strip_ansi(text)
                             if text_clean:
                                 self.output_received.emit(text_clean)
-                        
-                        # Выводим оставшуюся часть без \n
                         if buffer:
                             text = buffer.decode('utf-8', errors='replace').rstrip()
                             text_clean = self._strip_ansi(text)
@@ -113,8 +117,81 @@ class TerminalReadThread(QThread):
                     break
         
         except Exception as e:
-            self.output_received.emit(f"⚠️  Ошибка чтения PTY: {e}")
+            self.output_received.emit(f"⚠️  Ошибка чтения: {e}")
+        finally:
+            self.running = False
+            self.process_finished.emit()
+    
+    def _run_windows(self):
+        """Чтение через subprocess (Windows)"""
+        try:
+            import queue
+            output_queue = queue.Queue()
+            
+            def read_stdout():
+                """Поток для чтения stdout"""
+                try:
+                    for line in iter(self.process.stdout.readline, b''):
+                        if not self.running:
+                            break
+                        if line:
+                            output_queue.put(('stdout', line))
+                except Exception:
+                    pass
+                finally:
+                    output_queue.put(('done', None))
+            
+            def read_stderr():
+                """Поток для чтения stderr"""
+                try:
+                    for line in iter(self.process.stderr.readline, b''):
+                        if not self.running:
+                            break
+                        if line:
+                            output_queue.put(('stderr', line))
+                except Exception:
+                    pass
+            
+            # Запускаем потоки чтения
+            stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+            stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+            stdout_thread.start()
+            stderr_thread.start()
+            
+            # Читаем из очереди
+            while self.running:
+                try:
+                    source, data = output_queue.get(timeout=0.1)
+                    if source == 'done':
+                        break
+                    
+                    if data:
+                        text = data.decode('utf-8', errors='replace').rstrip()
+                        text_clean = self._strip_ansi(text)
+                        if text_clean:
+                            self.output_received.emit(text_clean)
+                
+                except queue.Empty:
+                    # Проверяем завершение процесса
+                    if self.process.poll() is not None:
+                        # Читаем оставшиеся данные
+                        for _ in range(10):
+                            try:
+                                source, data = output_queue.get(timeout=0.1)
+                                if source == 'done':
+                                    break
+                                if data:
+                                    text = data.decode('utf-8', errors='replace').rstrip()
+                                    text_clean = self._strip_ansi(text)
+                                    if text_clean:
+                                        self.output_received.emit(text_clean)
+                            except queue.Empty:
+                                break
+                        break
+                    continue
         
+        except Exception as e:
+            self.output_received.emit(f"⚠️  Ошибка чтения: {e}")
         finally:
             self.running = False
             self.process_finished.emit()
@@ -308,38 +385,58 @@ class EmbeddedTerminal(QWidget):
         self._run_with_pty(command)
     
     def _run_with_pty(self, command: List[str]):
-        """Запуск процесса через PTY (полный захват вывода)"""
+        """Запуск процесса (кроссплатформенный)"""
         try:
-            # Создаем PTY
-            master_fd, slave_fd = pty.openpty()
-            self.master_fd = master_fd
-            
-            # Запускаем процесс
-            self.process = subprocess.Popen(
-                command,
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                start_new_session=True
-            )
-            
-            # Закрываем slave в родительском процессе
-            os.close(slave_fd)
-            
-            # Устанавливаем неблокирующий режим
-            fcntl.fcntl(master_fd, fcntl.F_SETFL, os.O_NONBLOCK)
-            
-            self.running = True
-            
-            # Запускаем поток для чтения
-            self.read_thread = TerminalReadThread(master_fd, self.process)
-            self.read_thread.output_received.connect(self.print_to_terminal)
-            self.read_thread.process_finished.connect(self._on_process_finished)
-            self.read_thread.start()
-            
+            if os.name == 'nt':  # Windows
+                self._run_windows(command)
+            else:  # Linux/Unix
+                self._run_linux_pty(command)
         except Exception as e:
             self.print_to_terminal(f"❌ Ошибка запуска процесса: {e}", 'error')
             self.running = False
+    
+    def _run_linux_pty(self, command: List[str]):
+        """Запуск через PTY (Linux)"""
+        import pty
+        import fcntl
+        
+        master_fd, slave_fd = pty.openpty()
+        self.master_fd = master_fd
+        
+        self.process = subprocess.Popen(
+            command,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            start_new_session=True
+        )
+        
+        os.close(slave_fd)
+        fcntl.fcntl(master_fd, fcntl.F_SETFL, os.O_NONBLOCK)
+        
+        self.running = True
+        self.read_thread = TerminalReadThread(self.process, master_fd)
+        self.read_thread.output_received.connect(self.print_to_terminal)
+        self.read_thread.process_finished.connect(self._on_process_finished)
+        self.read_thread.start()
+    
+    def _run_windows(self, command: List[str]):
+        """Запуск через subprocess (Windows)"""
+        self.process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=False,  # Бинарный режим для правильной обработки
+            bufsize=1,  # Небуферизованный режим
+            universal_newlines=False
+        )
+        
+        self.running = True
+        self.read_thread = TerminalReadThread(self.process)
+        self.read_thread.output_received.connect(self.print_to_terminal)
+        self.read_thread.process_finished.connect(self._on_process_finished)
+        self.read_thread.start()
     
     def _on_process_finished(self):
         """Обработка завершения процесса"""
@@ -358,7 +455,7 @@ class EmbeddedTerminal(QWidget):
                 self.print_to_terminal(f"⚠️  Ошибка post-stop callback: {exc}", 'warning')
     
     def stop_process(self):
-        """Остановка запущенного процесса"""
+        """Остановка запущенного процесса (кроссплатформенный)"""
         if not self.running or not self.process:
             self.print_to_terminal("ℹ️  Нет запущенного процесса", 'info')
             return
@@ -369,22 +466,29 @@ class EmbeddedTerminal(QWidget):
         # Остановка потока чтения
         if self.read_thread:
             self.read_thread.stop()
-            self.read_thread.wait(1000)  # Ждем до 1 секунды
+            self.read_thread.wait(1000)
         
         try:
-            # Отправляем SIGTERM группе процессов
-            os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
-            
-            # Ждем завершения (timeout 3 секунды)
-            try:
-                self.process.wait(timeout=3)
-                self.print_to_terminal("✅ Процесс остановлен корректно", 'success')
-            except subprocess.TimeoutExpired:
-                # Если не завершился - SIGKILL
-                self.print_to_terminal("⚠️  Процесс не отвечает, принудительная остановка...", 'warning')
-                os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
-                self.process.wait(timeout=1)
-                self.print_to_terminal("✅ Процесс принудительно остановлен", 'success')
+            if os.name == 'nt':  # Windows
+                # Windows: используем terminate()
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=3)
+                    self.print_to_terminal("✅ Процесс остановлен корректно", 'success')
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=1)
+                    self.print_to_terminal("✅ Процесс принудительно остановлен", 'success')
+            else:  # Linux
+                # Linux: отправляем SIGTERM группе процессов
+                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                try:
+                    self.process.wait(timeout=3)
+                    self.print_to_terminal("✅ Процесс остановлен корректно", 'success')
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+                    self.process.wait(timeout=1)
+                    self.print_to_terminal("✅ Процесс принудительно остановлен", 'success')
         
         except Exception as e:
             self.print_to_terminal(f"❌ Ошибка остановки процесса: {e}", 'error')
@@ -412,7 +516,7 @@ class EmbeddedTerminal(QWidget):
             self.input_frame.hide()
     
     def send_message(self):
-        """Отправка сообщения в stdin процесса"""
+        """Отправка сообщения в stdin процесса (кроссплатформенный)"""
         if not self.running or not self.process:
             self.print_to_terminal("⚠️  Процесс не запущен!", 'warning')
             return
@@ -422,9 +526,15 @@ class EmbeddedTerminal(QWidget):
             return
         
         try:
-            # Отправка в stdin процесса через PTY
-            if self.master_fd:
-                os.write(self.master_fd, (message + '\n').encode('utf-8'))
+            if os.name == 'nt':  # Windows
+                # Windows: используем stdin процесса
+                if self.process.stdin:
+                    self.process.stdin.write((message + '\n').encode('utf-8'))
+                    self.process.stdin.flush()
+            else:  # Linux
+                # Linux: через PTY
+                if self.master_fd:
+                    os.write(self.master_fd, (message + '\n').encode('utf-8'))
             
             # Очистка поля ввода
             self.input_entry.clear()

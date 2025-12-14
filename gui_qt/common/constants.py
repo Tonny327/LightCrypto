@@ -4,9 +4,24 @@ LightCrypto GUI - Константы (PyQt6)
 """
 
 import os
+import sys
 
 # === ПУТИ ===
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+# Определяем корневую директорию приложения
+# Если запущено из PyInstaller bundle, используем sys._MEIPASS
+# Иначе используем относительный путь от текущего файла
+if getattr(sys, 'frozen', False):
+    # Запущено из PyInstaller bundle
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller создает временную папку _MEIPASS
+        # Но нам нужна папка, где находится exe файл
+        PROJECT_ROOT = os.path.dirname(sys.executable)
+    else:
+        PROJECT_ROOT = os.path.dirname(sys.executable)
+else:
+    # Запущено из исходников
+    PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+
 GUI_ROOT = os.path.join(PROJECT_ROOT, 'gui_qt')
 # Для совместимости с utils.py, который может ссылаться на старую структуру
 GUI_ROOT_OLD = os.path.join(PROJECT_ROOT, 'gui')
@@ -14,15 +29,53 @@ BUILD_DIR = os.path.join(PROJECT_ROOT, 'build')
 CIPHER_KEYS_DIR = os.path.join(PROJECT_ROOT, 'CipherKeys')
 PROFILES_DIR = os.path.join(GUI_ROOT, 'profiles', 'custom_codec')
 
-# Исполняемые файлы
-TAP_ENCRYPT = os.path.join(BUILD_DIR, 'tap_encrypt')
-TAP_DECRYPT = os.path.join(BUILD_DIR, 'tap_decrypt')
-FILE_ENCODE = os.path.join(BUILD_DIR, 'file_encode')
-FILE_DECODE = os.path.join(BUILD_DIR, 'file_decode')
-FILE_ENCODE_PLAIN = os.path.join(BUILD_DIR, 'file_encode_plain')
-FILE_DECODE_PLAIN = os.path.join(BUILD_DIR, 'file_decode_plain')
-FILE_ENCODE_HYBRID = os.path.join(BUILD_DIR, 'file_encode_hybrid')
-FILE_DECODE_HYBRID = os.path.join(BUILD_DIR, 'file_decode_hybrid')
+# Исполняемые файлы (кроссплатформенные)
+EXE_EXT = '.exe' if os.name == 'nt' else ''
+
+# Для Windows: файлы могут быть в build/Release/ или build/
+if os.name == 'nt':
+    BUILD_RELEASE_DIR = os.path.join(BUILD_DIR, 'Release')
+    BUILD_DEBUG_DIR = os.path.join(BUILD_DIR, 'Debug')
+else:
+    BUILD_RELEASE_DIR = BUILD_DIR
+    BUILD_DEBUG_DIR = BUILD_DIR
+
+# TAP программы (только для Linux)
+TAP_ENCRYPT = os.path.join(BUILD_DIR, f'tap_encrypt{EXE_EXT}')
+TAP_DECRYPT = os.path.join(BUILD_DIR, f'tap_decrypt{EXE_EXT}')
+
+# Локальные программы кодирования/декодирования
+# В установленном приложении файлы находятся в bin/ подпапке
+if getattr(sys, 'frozen', False):
+    # Запущено из PyInstaller bundle - файлы в bin/ относительно exe
+    BIN_DIR = os.path.join(PROJECT_ROOT, 'bin')
+else:
+    # Запущено из исходников - файлы в build/ или build/Release/
+    BIN_DIR = BUILD_DIR
+
+FILE_ENCODE = os.path.join(BIN_DIR, f'file_encode{EXE_EXT}')
+FILE_DECODE = os.path.join(BIN_DIR, f'file_decode{EXE_EXT}')
+FILE_ENCODE_PLAIN = os.path.join(BIN_DIR, f'file_encode_plain{EXE_EXT}')
+FILE_DECODE_PLAIN = os.path.join(BIN_DIR, f'file_decode_plain{EXE_EXT}')
+FILE_ENCODE_HYBRID = os.path.join(BIN_DIR, f'file_encode_hybrid{EXE_EXT}')
+FILE_DECODE_HYBRID = os.path.join(BIN_DIR, f'file_decode_hybrid{EXE_EXT}')
+
+# Альтернативные пути для Windows (MSVC помещает файлы в Release/)
+# В установленном приложении это не нужно, но оставляем для совместимости
+if os.name == 'nt' and not getattr(sys, 'frozen', False):
+    FILE_ENCODE_RELEASE = os.path.join(BUILD_RELEASE_DIR, f'file_encode{EXE_EXT}')
+    FILE_DECODE_RELEASE = os.path.join(BUILD_RELEASE_DIR, f'file_decode{EXE_EXT}')
+    FILE_ENCODE_PLAIN_RELEASE = os.path.join(BUILD_RELEASE_DIR, f'file_encode_plain{EXE_EXT}')
+    FILE_DECODE_PLAIN_RELEASE = os.path.join(BUILD_RELEASE_DIR, f'file_decode_plain{EXE_EXT}')
+    FILE_ENCODE_HYBRID_RELEASE = os.path.join(BUILD_RELEASE_DIR, f'file_encode_hybrid{EXE_EXT}')
+    FILE_DECODE_HYBRID_RELEASE = os.path.join(BUILD_RELEASE_DIR, f'file_decode_hybrid{EXE_EXT}')
+else:
+    FILE_ENCODE_RELEASE = FILE_ENCODE
+    FILE_DECODE_RELEASE = FILE_DECODE
+    FILE_ENCODE_PLAIN_RELEASE = FILE_ENCODE_PLAIN
+    FILE_DECODE_PLAIN_RELEASE = FILE_DECODE_PLAIN
+    FILE_ENCODE_HYBRID_RELEASE = FILE_ENCODE_HYBRID
+    FILE_DECODE_HYBRID_RELEASE = FILE_DECODE_HYBRID
 
 # Скрипты setup
 SETUP_TAP_A = os.path.join(PROJECT_ROOT, 'setup_tap_A.sh')
@@ -84,10 +137,11 @@ FONT_EMOJI = ('Arial', 16)
 FONT_EMOJI_LARGE = ('Arial', 48)
 
 # === РАЗМЕРЫ ОКОН ===
-WINDOW_MIN_WIDTH = 700
-WINDOW_MIN_HEIGHT = 800
-WINDOW_DEFAULT_WIDTH = 700
-WINDOW_DEFAULT_HEIGHT = 800
+# Компактные размеры для окон encrypt/decrypt (чтобы помещались рядом на экране)
+WINDOW_MIN_WIDTH = 450
+WINDOW_MIN_HEIGHT = 600
+WINDOW_DEFAULT_WIDTH = 480  # Размер как на скриншоте
+WINDOW_DEFAULT_HEIGHT = 650
 
 LAUNCHER_WIDTH = 600
 LAUNCHER_HEIGHT = 400

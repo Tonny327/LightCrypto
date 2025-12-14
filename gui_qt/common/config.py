@@ -16,7 +16,15 @@ class ConfigManager:
     """
     
     def __init__(self):
-        self.config_dir = os.path.expanduser('~/.config/lightcrypto')
+        # Кроссплатформенный путь для конфигурации
+        if os.name == 'nt':  # Windows
+            appdata = os.getenv('APPDATA', os.path.expanduser('~'))
+            self.config_dir = os.path.join(appdata, 'LightCrypto')
+            self.profiles_dir = os.path.join(self.config_dir, 'profiles', 'custom_codec')
+        else:  # Linux/Unix
+            self.config_dir = os.path.expanduser('~/.config/lightcrypto')
+            self.profiles_dir = os.path.join(self.config_dir, 'profiles', 'custom_codec')
+        
         self.config_file = os.path.join(self.config_dir, 'gui_config.json')
         self.config: Dict[str, Any] = {}
         self.load()
@@ -237,7 +245,10 @@ class ConfigManager:
     
     def get_last_file_dir(self) -> str:
         """Получить последнюю директорию выбора файла"""
-        return self.get('last_file_dir', os.path.expanduser('~'))
+        default = os.path.expanduser('~')
+        if os.name == 'nt':  # Windows
+            default = os.getenv('USERPROFILE', default)
+        return self.get('last_file_dir', default)
     
     def set_last_file_dir(self, directory: str):
         """Сохранить последнюю директорию выбора файла"""
@@ -245,9 +256,16 @@ class ConfigManager:
     
     def get_last_output_dir(self) -> str:
         """Получить последнюю директорию сохранения файла"""
-        return self.get('last_output_dir', os.path.expanduser('~'))
+        default = os.path.expanduser('~')
+        if os.name == 'nt':  # Windows
+            default = os.getenv('USERPROFILE', default)
+        return self.get('last_output_dir', default)
     
     def set_last_output_dir(self, directory: str):
         """Сохранить последнюю директорию сохранения файла"""
         self.set('last_output_dir', directory)
+    
+    def get_profiles_dir(self) -> str:
+        """Получить директорию для профилей"""
+        return self.profiles_dir
 

@@ -1,0 +1,9 @@
+# LightCrypto - Python Dependencies
+# Requirements for building the installer
+
+# GUI Framework
+PyQt6>=6.5.0,<7.0.0
+
+# Note: All other dependencies (os, sys, json, csv, subprocess, threading, etc.)
+# are part of Python standard library and don't need to be installed
+

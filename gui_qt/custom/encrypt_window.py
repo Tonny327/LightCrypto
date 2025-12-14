@@ -28,7 +28,14 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
         self._window_title = "🔐 LightCrypto - Custom Codec Encrypt (Отправитель)"
         self.codec_panel = None
         super().__init__(config, on_back)
+        # Исправляем window_name для правильного сохранения геометрии
+        # BaseWindow создал window_name на основе заголовка LibSodium, нужно переопределить
+        old_window_name = self.window_name
+        self.window_name = self._window_title.lower().replace(' ', '_').replace('🔐', '').replace('⚡', '').replace('📤', '').replace('📥', '').strip('_')
         self.setWindowTitle(self._window_title)
+        # Перезагружаем геометрию с правильным именем окна (если она была сохранена)
+        if old_window_name != self.window_name:
+            self._load_geometry()
     
     def _create_mode_switch(self, parent, layout):
         """Создает переключатель между сетевым, plain и hybrid режимами"""
@@ -41,21 +48,41 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
         switch_layout.addWidget(switch_label)
         
         # Группа радиокнопок для выбора режима
-        self.local_mode_group = QRadioButton("Сетевой режим (по умолчанию)")
-        self.local_mode_group.setChecked(True)
-        self.local_mode_group.setToolTip("Передача через сеть с шифрованием DigitalCodec")
-        self.local_mode_group.toggled.connect(lambda: self._on_mode_switch_changed())
-        switch_layout.addWidget(self.local_mode_group)
-        
-        self.plain_mode_radio = QRadioButton("Plain режим (без шифрования, только маркеры + CRC32)")
-        self.plain_mode_radio.setToolTip("Кодирование без шифрования: добавляет маркеры, номера строк и CRC32 для восстановления из шума")
-        self.plain_mode_radio.toggled.connect(lambda: self._on_mode_switch_changed())
-        switch_layout.addWidget(self.plain_mode_radio)
-        
-        self.hybrid_mode_radio = QRadioButton("Hybrid режим (шифрование DigitalCodec + plain фрагментация)")
-        self.hybrid_mode_radio.setToolTip("Сначала шифрует через DigitalCodec, затем применяет plain фрагментацию для передачи через радиочастотный канал")
-        self.hybrid_mode_radio.toggled.connect(lambda: self._on_mode_switch_changed())
-        switch_layout.addWidget(self.hybrid_mode_radio)
+        # Для Windows показываем только локальные режимы
+        if os.name == 'nt':  # Windows
+            # Custom Codec - первый и по умолчанию
+            self.custom_codec_radio = QRadioButton("◉ Custom Codec (шифрование DigitalCodec)")
+            self.custom_codec_radio.setChecked(True)  # По умолчанию Custom Codec режим
+            self.custom_codec_radio.setToolTip("Шифрование через DigitalCodec с параметрами M, Q, funType, h1, h2")
+            self.custom_codec_radio.toggled.connect(lambda: self._on_mode_switch_changed())
+            switch_layout.addWidget(self.custom_codec_radio)
+            
+            self.plain_mode_radio = QRadioButton("◉ Plain режим (без шифрования, только маркеры + CRC32)")
+            self.plain_mode_radio.setToolTip("Кодирование без шифрования: добавляет маркеры, номера строк и CRC32 для восстановления из шума")
+            self.plain_mode_radio.toggled.connect(lambda: self._on_mode_switch_changed())
+            switch_layout.addWidget(self.plain_mode_radio)
+            
+            self.hybrid_mode_radio = QRadioButton("◉ Hybrid режим (шифрование DigitalCodec + plain фрагментация)")
+            self.hybrid_mode_radio.setToolTip("Сначала шифрует через DigitalCodec, затем применяет plain фрагментацию для передачи через радиочастотный канал")
+            self.hybrid_mode_radio.toggled.connect(lambda: self._on_mode_switch_changed())
+            switch_layout.addWidget(self.hybrid_mode_radio)
+        else:
+            # Linux - сетевой режим по умолчанию
+            self.local_mode_group = QRadioButton("Сетевой режим (по умолчанию)")
+            self.local_mode_group.setChecked(True)
+            self.local_mode_group.setToolTip("Передача через сеть с шифрованием DigitalCodec")
+            self.local_mode_group.toggled.connect(lambda: self._on_mode_switch_changed())
+            switch_layout.addWidget(self.local_mode_group)
+            
+            self.plain_mode_radio = QRadioButton("Plain режим (без шифрования, только маркеры + CRC32)")
+            self.plain_mode_radio.setToolTip("Кодирование без шифрования: добавляет маркеры, номера строк и CRC32 для восстановления из шума")
+            self.plain_mode_radio.toggled.connect(lambda: self._on_mode_switch_changed())
+            switch_layout.addWidget(self.plain_mode_radio)
+            
+            self.hybrid_mode_radio = QRadioButton("Hybrid режим (шифрование DigitalCodec + plain фрагментация)")
+            self.hybrid_mode_radio.setToolTip("Сначала шифрует через DigitalCodec, затем применяет plain фрагментацию для передачи через радиочастотный канал")
+            self.hybrid_mode_radio.toggled.connect(lambda: self._on_mode_switch_changed())
+            switch_layout.addWidget(self.hybrid_mode_radio)
         
         layout.insertWidget(0, switch_frame)
     
@@ -143,10 +170,15 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
             self.local_output_path = filename
     
     def _on_mode_switch_changed(self):
-        """Обработка переключения между сетевым, plain и hybrid режимами"""
+        """Обработка переключения между сетевым, plain, custom codec и hybrid режимами"""
         is_plain_mode = self.plain_mode_radio.isChecked()
         is_hybrid_mode = self.hybrid_mode_radio.isChecked()
-        is_local_mode = is_plain_mode or is_hybrid_mode
+        is_custom_codec_mode = hasattr(self, 'custom_codec_radio') and self.custom_codec_radio.isChecked()
+        is_local_mode = is_plain_mode or is_hybrid_mode or is_custom_codec_mode
+        
+        # Для Windows всегда локальный режим
+        if os.name == 'nt':
+            is_local_mode = True
         
         scroll_area = self.main_layout.itemAt(0).widget()
         if not scroll_area:
@@ -166,8 +198,8 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
                 if is_plain_mode:
                     # Plain режим - скрываем панель кодека (не нужна)
                     self.codec_panel.hide()
-                elif is_hybrid_mode:
-                    # Hybrid режим - показываем панель кодека (нужна для шифрования)
+                elif is_hybrid_mode or is_custom_codec_mode:
+                    # Hybrid или Custom Codec режим - показываем панель кодека (нужна для шифрования)
                     self.codec_panel.show()
             
             # Скрываем кнопку запуска из сетевой панели
@@ -274,8 +306,9 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
                 scroll_layout.insertWidget(terminal_index + 1, self.local_start_button_frame)
             
             # Инициализация видимости панелей
-            self.local_file_frame.hide()  # Скрываем по умолчанию (сетевой режим)
-            self.local_start_button_frame.hide()  # Скрываем по умолчанию
+            # Вызываем _on_mode_switch_changed для правильной настройки видимости при старте
+            # Это установит правильную видимость в зависимости от выбранного режима по умолчанию (Custom Codec)
+            self._on_mode_switch_changed()
         
         # Переменные для локального режима
         self.local_output_path = ''
@@ -285,8 +318,10 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
         # Проверяем переключатель режимов
         is_plain_mode = hasattr(self, 'plain_mode_radio') and self.plain_mode_radio.isChecked()
         is_hybrid_mode = hasattr(self, 'hybrid_mode_radio') and self.hybrid_mode_radio.isChecked()
-
-        if is_plain_mode or is_hybrid_mode:
+        is_custom_codec_mode = hasattr(self, 'custom_codec_radio') and self.custom_codec_radio.isChecked()
+        
+        # Для Windows всегда локальный режим
+        if os.name == 'nt' or is_plain_mode or is_hybrid_mode or is_custom_codec_mode:
             # Локальный режим (plain или hybrid)
             input_path = self.local_input_entry.text().strip()
             output_path = self.local_output_entry.text().strip()
@@ -306,10 +341,62 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
             # Формирование команды в зависимости от режима
             if is_plain_mode:
                 # Plain режим - без шифрования
+                # Проверяем наличие исполняемого файла (Windows может быть в Release/)
+                exe_path = FILE_ENCODE_PLAIN
+                if os.name == 'nt' and not os.path.isfile(exe_path):
+                    exe_path = FILE_ENCODE_PLAIN_RELEASE
+                
+                if not os.path.isfile(exe_path):
+                    QMessageBox.critical(
+                        self,
+                        "Ошибка",
+                        f"Исполняемый файл не найден: {exe_path}\n"
+                        "Запустите сборку: build_windows.bat"
+                    )
+                    return
+                
                 cmd = [
-                    FILE_ENCODE_PLAIN,
+                    exe_path,
                     input_path,
                     output_path
+                ]
+            elif is_custom_codec_mode:
+                # Custom Codec режим (с шифрованием, но без plain фрагментации)
+                # Валидация параметров кодека
+                if not self.codec_panel.is_valid():
+                    QMessageBox.critical(
+                        self,
+                        "Ошибка",
+                        "Некорректные параметры кодека!\n"
+                        "Проверьте выбор CSV и значения M, Q."
+                    )
+                    return
+                
+                # Проверяем наличие исполняемого файла
+                exe_path = FILE_ENCODE
+                if os.name == 'nt' and not os.path.isfile(exe_path):
+                    exe_path = FILE_ENCODE_RELEASE
+                
+                if not os.path.isfile(exe_path):
+                    QMessageBox.critical(
+                        self,
+                        "Ошибка",
+                        f"Исполняемый файл не найден: {exe_path}\n"
+                        "Запустите сборку: build_windows.bat"
+                    )
+                    return
+                
+                codec_params = self.codec_panel.get_params()
+                cmd = [
+                    exe_path,
+                    input_path,
+                    output_path,
+                    '--codec', codec_params['csv_path'],
+                    '--M', str(codec_params['M']),
+                    '--Q', str(codec_params['Q']),
+                    '--fun', str(codec_params['funType']),
+                    '--h1', str(codec_params['h1']),
+                    '--h2', str(codec_params['h2'])
                 ]
             elif is_hybrid_mode:
                 # Hybrid режим - с шифрованием через DigitalCodec
@@ -323,9 +410,61 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
                     )
                     return
                 
+                # Проверяем наличие исполняемого файла
+                exe_path = FILE_ENCODE_HYBRID
+                if os.name == 'nt' and not os.path.isfile(exe_path):
+                    exe_path = FILE_ENCODE_HYBRID_RELEASE
+                
+                if not os.path.isfile(exe_path):
+                    QMessageBox.critical(
+                        self,
+                        "Ошибка",
+                        f"Исполняемый файл не найден: {exe_path}\n"
+                        "Запустите сборку: build_windows.bat"
+                    )
+                    return
+                
                 codec_params = self.codec_panel.get_params()
                 cmd = [
-                    FILE_ENCODE_HYBRID,
+                    exe_path,
+                    input_path,
+                    output_path,
+                    '--codec', codec_params['csv_path'],
+                    '--M', str(codec_params['M']),
+                    '--Q', str(codec_params['Q']),
+                    '--fun', str(codec_params['funType']),
+                    '--h1', str(codec_params['h1']),
+                    '--h2', str(codec_params['h2'])
+                ]
+            else:
+                # Custom Codec режим (с шифрованием, но без plain фрагментации)
+                # Валидация параметров кодека
+                if not self.codec_panel.is_valid():
+                    QMessageBox.critical(
+                        self,
+                        "Ошибка",
+                        "Некорректные параметры кодека!\n"
+                        "Проверьте выбор CSV и значения M, Q."
+                    )
+                    return
+                
+                # Проверяем наличие исполняемого файла
+                exe_path = FILE_ENCODE
+                if os.name == 'nt' and not os.path.isfile(exe_path):
+                    exe_path = FILE_ENCODE_RELEASE
+                
+                if not os.path.isfile(exe_path):
+                    QMessageBox.critical(
+                        self,
+                        "Ошибка",
+                        f"Исполняемый файл не найден: {exe_path}\n"
+                        "Запустите сборку: build_windows.bat"
+                    )
+                    return
+                
+                codec_params = self.codec_panel.get_params()
+                cmd = [
+                    exe_path,
                     input_path,
                     output_path,
                     '--codec', codec_params['csv_path'],
@@ -437,7 +576,8 @@ class CustomCodecEncryptGUI(LibSodiumEncryptGUI):
         # Проверяем, какой режим активен
         is_plain_mode = hasattr(self, 'plain_mode_radio') and self.plain_mode_radio.isChecked()
         is_hybrid_mode = hasattr(self, 'hybrid_mode_radio') and self.hybrid_mode_radio.isChecked()
-        is_local_mode = is_plain_mode or is_hybrid_mode
+        is_custom_codec_mode = hasattr(self, 'custom_codec_radio') and self.custom_codec_radio.isChecked()
+        is_local_mode = is_plain_mode or is_hybrid_mode or is_custom_codec_mode
 
         if is_local_mode:
             # Локальный режим - возвращаем локальную кнопку

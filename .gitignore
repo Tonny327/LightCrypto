@@ -72,7 +72,9 @@ MANIFEST
 
 # PyInstaller
 *.manifest
-*.spec
+# Note: LightCrypto.spec should be committed (it's needed for building installer)
+# installer/staging/ - temporary files for installer (created by prepare_files.bat)
+installer/staging/
 
 # Unit test / coverage reports
 htmlcov/

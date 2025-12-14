@@ -54,19 +54,23 @@ class LightCryptoGUI:
         """Проверка системных требований"""
         print("🔍 Проверка системных требований...")
         
-        # Проверка sudo доступа
-        if not check_sudo_access():
-            print(MSG_SUDO_REQUIRED)
-            # В PyQt6 можно показать диалог, но для консольного вывода просто предупреждение
-            print("⚠️  Продолжение без sudo может привести к ошибкам")
+        # Проверка sudo доступа (только для Linux)
+        import os
+        if os.name != 'nt':  # Не Windows
+            if not check_sudo_access():
+                print(MSG_SUDO_REQUIRED)
+                print("⚠️  Продолжение без sudo может привести к ошибкам")
+            else:
+                print("✅ Sudo доступ: OK")
         else:
-            print("✅ Sudo доступ: OK")
+            print("✅ Windows: sudo не требуется")
         
         # Проверка исполняемых файлов
         all_exist, missing = check_build_files()
         if not all_exist:
-            print(MSG_BUILD_NOT_FOUND)
-            print(f"Отсутствуют файлы: {', '.join(missing)}")
+            print("⚠️  Некоторые исполняемые файлы не найдены")
+            print(f"Отсутствуют: {', '.join(missing)}")
+            print("⚠️  Запустите сборку: build_windows.bat (Windows) или ./rebuild.sh (Linux)")
             print("⚠️  Продолжение без исполняемых файлов может привести к ошибкам")
         else:
             print("✅ Исполняемые файлы: OK")
@@ -76,7 +80,14 @@ class LightCryptoGUI:
     
     def run(self):
         """Запуск приложения"""
-        self.show_launcher()
+        # Для Windows сразу показываем выбор роли для Custom Codec
+        import os
+        if os.name == 'nt':  # Windows
+            self.current_cipher = 'custom'
+            self.show_role_selector()
+        else:
+            # Для Linux показываем launcher
+            self.show_launcher()
     
     def show_launcher(self):
         """Показать стартовое окно выбора типа шифрования"""
@@ -104,11 +115,20 @@ class LightCryptoGUI:
         if self.current_window:
             self.current_window.close()
         
+        # Определяем callback для кнопки "Назад"
+        import os
+        if os.name == 'nt' and self.current_cipher == 'custom':
+            # На Windows при прямом запуске Custom Codec - не показываем кнопку "Назад"
+            on_back = None
+        else:
+            # Иначе показываем launcher
+            on_back = self.show_launcher
+        
         self.current_window = RoleSelectorWindow(
             config=self.config,
             cipher_type=self.current_cipher,
             on_select=self.on_role_selected,
-            on_back=self.show_launcher
+            on_back=on_back
         )
         self.current_window.show()
     
@@ -118,7 +138,7 @@ class LightCryptoGUI:
         
         Args:
             cipher_type: 'libsodium' или 'custom'
-            role: 'encrypt' или 'decrypt'
+            role: 'encrypt', 'decrypt', 'local_encode' или 'local_decode'
         """
         self.current_cipher = cipher_type
         self.current_role = role
@@ -127,7 +147,22 @@ class LightCryptoGUI:
         if self.current_window:
             self.current_window.close()
         
-        # Открытие соответствующего GUI
+        # Локальный режим (Windows)
+        if role == 'local_encode':
+            if CustomCodecEncryptGUI:
+                self.show_custom_encrypt()
+            else:
+                QMessageBox.critical(None, "Ошибка", "Custom Codec Encrypt GUI еще не реализован")
+            return
+        
+        if role == 'local_decode':
+            if CustomCodecDecryptGUI:
+                self.show_custom_decrypt()
+            else:
+                QMessageBox.critical(None, "Ошибка", "Custom Codec Decrypt GUI еще не реализован")
+            return
+        
+        # Сетевой режим (Linux)
         if cipher_type == 'libsodium' and role == 'encrypt':
             if LibSodiumEncryptGUI:
                 self.show_libsodium_encrypt()

@@ -42,11 +42,17 @@ class CodecPanel(QGroupBox):
         self._create_widgets()
         self._scan_csv_files()
         
-        # Загрузка последнего CSV
+        # Загрузка последнего CSV или установка Q=2.csv по умолчанию
         last_csv = config.get_custom_csv()
         if last_csv and last_csv in self.csv_files:
             self.csv_combo.setCurrentText(last_csv)
             self._on_csv_selected()
+        elif "Q=2.csv" in self.csv_files:
+            # Устанавливаем Q=2.csv по умолчанию, если он доступен
+            self.csv_combo.setCurrentText("Q=2.csv")
+            self._on_csv_selected()
+            # Сохраняем в конфигурацию
+            config.set_custom_csv("Q=2.csv")
     
     def _create_widgets(self):
         """Создание всех элементов панели"""
@@ -215,35 +221,53 @@ class CodecPanel(QGroupBox):
         parent_layout.addWidget(status_group)
     
     def _scan_csv_files(self):
-        """Сканирование CSV файлов"""
-        self.csv_files = scan_csv_files()
+        """Сканирование CSV файлов (кроссплатформенный)"""
+        # Используем абсолютный путь к CIPHER_KEYS_DIR
+        cipher_keys_path = os.path.abspath(CIPHER_KEYS_DIR)
+        self.csv_files = scan_csv_files(cipher_keys_path)
         self.csv_combo.clear()
-        self.csv_combo.addItems(self.csv_files)
+        if self.csv_files:
+            self.csv_combo.addItems(self.csv_files)
+        else:
+            self.csv_combo.addItem("(CSV файлы не найдены)")
     
     def _browse_csv(self):
-        """Выбор CSV файла через диалог"""
+        """Выбор CSV файла через диалог (кроссплатформенный)"""
+        # Используем абсолютный путь для Windows
+        start_dir = os.path.abspath(CIPHER_KEYS_DIR)
+        if not os.path.isdir(start_dir):
+            start_dir = os.path.expanduser('~')
+        
         filepath, _ = QFileDialog.getOpenFileName(
             self,
             "Выберите CSV файл ключа",
-            CIPHER_KEYS_DIR,
+            start_dir,
             "CSV файлы (*.csv);;Все файлы (*.*)"
         )
         
         if filepath:
             filename = os.path.basename(filepath)
+            # Сохраняем полный путь для использования
             if filename not in self.csv_files:
                 self.csv_files.append(filename)
                 self.csv_combo.addItem(filename)
             self.csv_combo.setCurrentText(filename)
+            # Обновляем путь к CSV для анализа
+            self._csv_full_path = filepath
             self._on_csv_selected()
     
     def _on_csv_selected(self):
-        """Обработка выбора CSV файла"""
+        """Обработка выбора CSV файла (кроссплатформенный)"""
         csv_name = self.csv_combo.currentText()
-        if not csv_name:
+        if not csv_name or csv_name == "(CSV файлы не найдены)":
             return
         
-        csv_path = os.path.join(CIPHER_KEYS_DIR, csv_name)
+        # Используем сохраненный полный путь или строим из CIPHER_KEYS_DIR
+        if hasattr(self, '_csv_full_path') and os.path.isfile(self._csv_full_path):
+            csv_path = self._csv_full_path
+        else:
+            csv_path = os.path.join(os.path.abspath(CIPHER_KEYS_DIR), csv_name)
+        
         self.csv_analysis = analyze_csv(csv_path)
         
         if self.csv_analysis['success']:
@@ -332,11 +356,20 @@ class CodecPanel(QGroupBox):
             return False
     
     def get_params(self):
-        """Получение текущих параметров"""
+        """Получение текущих параметров (кроссплатформенный)"""
         csv_name = self.csv_combo.currentText()
+        
+        # Используем сохраненный полный путь или строим из CIPHER_KEYS_DIR
+        if hasattr(self, '_csv_full_path') and os.path.isfile(self._csv_full_path):
+            csv_path = self._csv_full_path
+        elif csv_name and csv_name != "(CSV файлы не найдены)":
+            csv_path = os.path.join(os.path.abspath(CIPHER_KEYS_DIR), csv_name)
+        else:
+            csv_path = ''
+        
         return {
             'csv_file': csv_name,
-            'csv_path': os.path.join(CIPHER_KEYS_DIR, csv_name) if csv_name else '',
+            'csv_path': csv_path,
             'M': self.M_spin.value(),
             'Q': self.Q_spin.value(),
             'funType': self.funType_combo.currentIndex() + 1,
