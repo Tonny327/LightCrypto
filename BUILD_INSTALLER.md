@@ -68,3 +68,4 @@ pip install pyinstaller
 - Проверьте, что все зависимости установлены: `pip install -r requirements.txt`
 - Убедитесь, что PyQt6 установлен: `pip install PyQt6`
 
+
